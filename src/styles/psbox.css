@@ -1,0 +1,160 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --psbox-bg: #0c0e10;
+  --psbox-bg-top: #181c18;
+  --psbox-panel: #15191e;
+  --psbox-surface: #1b2028;
+  --psbox-border: rgba(255, 255, 255, 0.1);
+  --psbox-green: #107c10;
+  --psbox-green-bright: #16a34a;
+  --psbox-green-glow: rgba(16, 124, 16, 0.45);
+  --psbox-text: #f8fafc;
+  --psbox-gray: #b4bcc8;
+  --psbox-dim: #7b8494;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background-color: var(--psbox-bg);
+  color: var(--psbox-text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  overflow-x: hidden;
+}
+
+.psbox-shell-bg {
+  background: radial-gradient(circle at 80% 15%, rgba(16, 124, 16, 0.16) 0%, transparent 45%),
+    linear-gradient(180deg, var(--psbox-bg-top) 0%, var(--psbox-bg) 420px);
+}
+
+.psbox-row-scroll {
+  display: flex;
+  gap: 18px;
+  overflow-x: auto;
+  padding: 8px 4px 16px 4px;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.psbox-row-scroll::-webkit-scrollbar {
+  height: 7px;
+}
+
+.psbox-row-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+
+.psbox-card {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #1a1f24;
+  border: 2px solid transparent;
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.18s ease, box-shadow 0.18s ease;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.psbox-card:hover,
+.psbox-card:focus-visible,
+.psbox-card.active {
+  transform: translateY(-4px) scale(1.03);
+  border-color: #ffffff;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.2);
+  outline: none;
+}
+
+.psbox-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.psbox-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
+}
+
+.psbox-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.psbox-btn-primary {
+  background: var(--psbox-green);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 6px 20px rgba(16, 124, 16, 0.35);
+}
+
+.psbox-btn-primary:hover:not(:disabled) {
+  background: var(--psbox-green-bright);
+  box-shadow: 0 8px 26px rgba(22, 163, 74, 0.45);
+}
+
+@keyframes spinSlow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.psbox-spinner {
+  animation: spinSlow 0.9s linear infinite;
+}
+
+/* Stream post-processing presets */
+.stream-sharp-low {
+  filter: contrast(1.04) saturate(1.03);
+}
+.stream-sharp-medium {
+  filter: contrast(1.08) saturate(1.05) brightness(1.01);
+}
+.stream-sharp-high {
+  filter: contrast(1.13) saturate(1.08) brightness(1.02);
+}
