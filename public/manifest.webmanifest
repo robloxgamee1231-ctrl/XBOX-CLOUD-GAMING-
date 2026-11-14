@@ -1,0 +1,19 @@
+{
+  "name": "PSBox Cloud Gaming",
+  "short_name": "PSBox",
+  "description": "Xbox Cloud Gaming & Remote Play in your browser",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0e14",
+  "theme_color": "#107c10",
+  "icons": [
+    {
+      "src": "./assets/icon0.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
