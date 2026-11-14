@@ -50,6 +50,66 @@ const VK_MAP: Record<string, { bit?: number; vk: number }> = {
   Tab: { bit: GamepadButton.View, vk: 0x09 },
 };
 
+const TouchThumbstick: React.FC<{
+  label: string;
+  onMove: (x: number, y: number) => void;
+}> = ({ label, onMove }) => {
+  const baseRef = useRef<HTMLDivElement | null>(null);
+  const [knob, setKnob] = useState({ x: 0, y: 0 });
+  const activePtr = useRef<number | null>(null);
+
+  const updateFromPointer = (clientX: number, clientY: number) => {
+    const el = baseRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const maxR = rect.width / 2 - 14;
+    let dx = clientX - cx;
+    let dy = clientY - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxR) {
+      dx = (dx / dist) * maxR;
+      dy = (dy / dist) * maxR;
+    }
+    setKnob({ x: dx, y: dy });
+    onMove(dx / maxR, -dy / maxR);
+  };
+
+  return (
+    <div
+      ref={baseRef}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        activePtr.current = e.pointerId;
+        updateFromPointer(e.clientX, e.clientY);
+      }}
+      onPointerMove={(e) => {
+        if (activePtr.current === e.pointerId) updateFromPointer(e.clientX, e.clientY);
+      }}
+      onPointerUp={(e) => {
+        if (activePtr.current === e.pointerId) {
+          activePtr.current = null;
+          setKnob({ x: 0, y: 0 });
+          onMove(0, 0);
+        }
+      }}
+      onPointerCancel={() => {
+        activePtr.current = null;
+        setKnob({ x: 0, y: 0 });
+        onMove(0, 0);
+      }}
+      className="relative w-28 h-28 sm:w-32 sm:h-32 rounded-full bg-black/55 backdrop-blur-md border-2 border-white/20 flex items-center justify-center touch-none select-none"
+    >
+      <span className="text-[10px] font-bold text-white/35 uppercase pointer-events-none">{label}</span>
+      <div
+        className="absolute w-12 h-12 rounded-full bg-white/25 border-2 border-white/70 shadow-lg pointer-events-none transition-transform duration-75"
+        style={{ transform: `translate(${knob.x}px, ${knob.y}px)` }}
+      />
+    </div>
+  );
+};
+
 export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   title,
   targetId,
@@ -71,7 +131,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [streamError, setStreamError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [showStats, setShowStats] = useState(true);
-  const [showVirtualPad, setShowVirtualPad] = useState(false);
+  const [showVirtualPad, setShowVirtualPad] = useState(() =>
+    typeof window !== 'undefined' ? 'ontouchstart' in window || navigator.maxTouchPoints > 0 : false,
+  );
   const [mouseCapture, setMouseCapture] = useState(false);
   const [muted, setMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -89,8 +151,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     codec: 'H.264 High',
   });
 
-  // Demo simulation state ref
   const demoInputRef = useRef({
+    stickX: 0,
+    stickY: 0,
     up: false,
     down: false,
     left: false,
@@ -101,13 +164,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     y: false,
   });
 
-  // Connect real WebRTC or Demo stream
   useEffect(() => {
     startTimeRef.current = Date.now();
     if (demoMode) {
-      const timer = window.setTimeout(() => {
-        setConnected(true);
-      }, 900);
+      const timer = window.setTimeout(() => setConnected(true), 650);
       return () => clearTimeout(timer);
     }
 
@@ -125,9 +185,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         setKbReq(req);
         setKbText(req.defaultText || '');
       },
-      onClosed: (reason) => {
-        setStreamError(reason);
-      },
+      onClosed: (reason) => setStreamError(reason),
     });
     client.setDeadzone(settings.deadzone);
     client.setTriggerRumble(settings.triggerRumble);
@@ -135,9 +193,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     client
       .connect(targetId, settings.resolution, 'en-US', isHome)
-      .catch((err) => {
-        setStreamError(err instanceof Error ? err.message : String(err));
-      });
+      .catch((err) => setStreamError(err instanceof Error ? err.message : String(err)));
 
     return () => {
       client.stop();
@@ -150,7 +206,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     clientRef.current?.setTriggerRumble(settings.triggerRumble);
   }, [settings.deadzone, settings.triggerRumble]);
 
-  // Interactive 60fps Demo Stream Canvas
+  // Interactive 60fps Demo Arcade Stream Canvas
   useEffect(() => {
     if (!demoMode || !connected) return;
     const canvas = demoCanvasRef.current;
@@ -160,20 +216,34 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     let raf = 0;
     let px = 640;
-    let py = 390;
+    let py = 460;
     let vx = 0;
     let vy = 0;
     let frame = 0;
+    let score = 0;
+    let fireCooldown = 0;
+    const stars = Array.from({ length: 60 }, () => ({
+      x: Math.random() * 1280,
+      y: Math.random() * 340,
+      s: Math.random() * 2 + 0.6,
+    }));
+    const rings = Array.from({ length: 4 }, (_, i) => ({
+      x: 240 + Math.random() * 800,
+      y: 220 + Math.random() * 260,
+      z: i * 0.25 + 0.2,
+    }));
+    const bolts: Array<{ x: number; y: number; vy: number }> = [];
     const particles: Array<{ x: number; y: number; vx: number; vy: number; life: number; color: string }> = [];
 
     const tick = () => {
       frame++;
+      if (fireCooldown > 0) fireCooldown--;
       const pads = navigator.getGamepads?.() ?? [];
       const pad = pads[0];
       const inp = demoInputRef.current;
 
-      let ax = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
-      let ay = (inp.down ? 1 : 0) - (inp.up ? 1 : 0);
+      let ax = inp.stickX || (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+      let ay = -inp.stickY || (inp.down ? 1 : 0) - (inp.up ? 1 : 0);
       let btnA = inp.a;
       let btnX = inp.x;
 
@@ -184,47 +254,95 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         if (pad.buttons[2]?.pressed) btnX = true;
       }
 
-      const speed = btnA ? 7.5 : 4.6;
-      vx = vx * 0.82 + ax * speed * 0.35;
-      vy = vy * 0.82 + ay * speed * 0.35;
+      const speed = btnA ? 9.2 : 5.4;
+      vx = vx * 0.8 + ax * speed * 0.35;
+      vy = vy * 0.8 + ay * speed * 0.35;
       px = Math.max(80, Math.min(1200, px + vx));
-      py = Math.max(120, Math.min(620, py + vy));
+      py = Math.max(140, Math.min(620, py + vy));
 
-      if (btnA || btnX || frame % 4 === 0) {
+      if (btnX && fireCooldown === 0) {
+        bolts.push({ x: px, y: py - 24, vy: -14 });
+        fireCooldown = 8;
+      }
+
+      if (btnA || frame % 3 === 0) {
         particles.push({
           x: px,
-          y: py,
-          vx: (Math.random() - 0.5) * 3 - vx * 0.4,
-          vy: (Math.random() - 0.5) * 3 - vy * 0.4,
+          y: py + 12,
+          vx: (Math.random() - 0.5) * 2.6 - vx * 0.3,
+          vy: 2 + Math.random() * 2,
           life: 1,
-          color: btnX ? '#38bdf8' : btnA ? '#4ade80' : '#107c10',
+          color: btnA ? '#4ade80' : '#107c10',
         });
       }
 
-      // Draw sky + cyber grid horizon
+      // Sky gradient
       const grad = ctx.createLinearGradient(0, 0, 0, 720);
-      grad.addColorStop(0, '#07100c');
-      grad.addColorStop(0.55, '#0b1e14');
-      grad.addColorStop(1, '#06080c');
+      grad.addColorStop(0, '#050c09');
+      grad.addColorStop(0.45, '#0b2217');
+      grad.addColorStop(1, '#05070a');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, 1280, 720);
 
-      // Perspective grid
-      ctx.strokeStyle = 'rgba(34, 197, 94, 0.16)';
+      // Stars
+      ctx.fillStyle = 'rgba(255,255,255,0.65)';
+      for (const st of stars) {
+        ctx.fillRect(st.x, st.y, st.s, st.s);
+      }
+
+      // Horizon cyber grid
+      ctx.strokeStyle = 'rgba(34, 197, 94, 0.2)';
       ctx.lineWidth = 1;
       for (let gx = -600; gx <= 1880; gx += 80) {
         ctx.beginPath();
-        ctx.moveTo(640 + (gx - 640) * 0.18, 220);
+        ctx.moveTo(640 + (gx - 640) * 0.16, 260);
         ctx.lineTo(gx, 720);
         ctx.stroke();
       }
       for (let i = 0; i < 12; i++) {
-        const tVal = ((i + (frame * 0.03) % 1) / 12);
-        const yLine = 220 + tVal * tVal * 500;
+        const tVal = (i + ((frame * (btnA ? 0.065 : 0.032)) % 1)) / 12;
+        const yLine = 260 + tVal * tVal * 460;
         ctx.beginPath();
         ctx.moveTo(0, yLine);
         ctx.lineTo(1280, yLine);
         ctx.stroke();
+      }
+
+      // Energy Rings (Fly through for points!)
+      for (const ring of rings) {
+        ring.z += btnA ? 0.015 : 0.008;
+        if (ring.z > 1.15) {
+          if (Math.hypot(px - ring.x, py - ring.y) < 75) {
+            score += 100;
+            for (let k = 0; k < 14; k++) {
+              particles.push({
+                x: ring.x,
+                y: ring.y,
+                vx: (Math.random() - 0.5) * 8,
+                vy: (Math.random() - 0.5) * 8,
+                life: 1,
+                color: '#38bdf8',
+              });
+            }
+          }
+          ring.z = 0.05;
+          ring.x = 200 + Math.random() * 880;
+          ring.y = 180 + Math.random() * 340;
+        }
+        const radius = 16 + ring.z * 58;
+        ctx.strokeStyle = `rgba(56, 189, 248, ${Math.min(1, ring.z * 0.9)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(ring.x, ring.y, radius, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Plasma bolts
+      ctx.fillStyle = '#38bdf8';
+      for (let i = bolts.length - 1; i >= 0; i--) {
+        bolts[i].y += bolts[i].vy;
+        ctx.fillRect(bolts[i].x - 2.5, bolts[i].y, 5, 16);
+        if (bolts[i].y < 0) bolts.splice(i, 1);
       }
 
       // Particles
@@ -232,7 +350,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         const pt = particles[i];
         pt.x += pt.vx;
         pt.y += pt.vy;
-        pt.life -= 0.03;
+        pt.life -= 0.035;
         if (pt.life <= 0) {
           particles.splice(i, 1);
           continue;
@@ -245,42 +363,38 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }
       ctx.globalAlpha = 1;
 
-      // Player craft
+      // Craft
       ctx.save();
       ctx.translate(px, py);
-      ctx.rotate(vx * 0.04);
-      ctx.shadowColor = '#22c55e';
-      ctx.shadowBlur = btnA ? 28 : 16;
+      ctx.rotate(vx * 0.045);
+      ctx.shadowColor = btnA ? '#4ade80' : '#22c55e';
+      ctx.shadowBlur = btnA ? 30 : 16;
       ctx.fillStyle = '#f8fafc';
       ctx.beginPath();
-      ctx.moveTo(0, -26);
-      ctx.lineTo(24, 18);
-      ctx.lineTo(0, 10);
-      ctx.lineTo(-24, 18);
+      ctx.moveTo(0, -28);
+      ctx.lineTo(26, 20);
+      ctx.lineTo(0, 11);
+      ctx.lineTo(-26, 20);
       ctx.closePath();
       ctx.fill();
       ctx.restore();
 
-      // Stream banner
-      ctx.fillStyle = 'rgba(12, 16, 20, 0.72)';
-      ctx.fillRect(28, 24, 440, 62);
+      // HUD Card
+      ctx.fillStyle = 'rgba(10, 14, 18, 0.78)';
+      ctx.fillRect(28, 86, 370, 68);
       ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-      ctx.strokeRect(28, 24, 440, 62);
+      ctx.strokeRect(28, 86, 370, 68);
       ctx.fillStyle = '#4ade80';
-      ctx.font = 'bold 12px Inter, sans-serif';
-      ctx.fillText('DEMO STREAM SIMULATOR • 60 FPS INTERACTIVE', 44, 48);
+      ctx.font = 'bold 11px Inter, sans-serif';
+      ctx.fillText(`DEMO CLOUD STREAM • SCORE: ${score}`, 44, 110);
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 18px Inter, sans-serif';
-      ctx.fillText(title, 44, 73);
-
-      ctx.fillStyle = 'rgba(255,255,255,0.68)';
-      ctx.font = '13px Inter, sans-serif';
-      ctx.fillText('Use Arrow keys / Gamepad / On-Screen Pad to pilot • Space = Boost • ESC = Game Menu', 28, 694);
+      ctx.fillText(title, 44, 136);
 
       if (frame % 30 === 0) {
         setTelemetry({
-          rttMs: Math.round(16 + Math.random() * 5),
-          bitrateMbps: Number((15.2 + Math.random() * 2.4).toFixed(1)),
+          rttMs: Math.round(15 + Math.random() * 5),
+          bitrateMbps: Number((15.4 + Math.random() * 2.2).toFixed(1)),
           fps: 60,
           packetLossPct: 0,
           width: settings.resolution === '720p' ? 1280 : settings.resolution === '1440p' ? 2560 : 1920,
@@ -295,7 +409,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return () => cancelAnimationFrame(raf);
   }, [demoMode, connected, title, settings.resolution, settings.deadzone]);
 
-  // Keyboard & Pointer Lock forwarding
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -312,9 +425,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       const mapped = VK_MAP[e.code];
       if (mapped?.bit) clientRef.current?.setKeyboardGamepadBit(mapped.bit, true);
-      if (mouseCapture) {
-        clientRef.current?.sendRawKey(e.keyCode, true);
-      }
+      if (mouseCapture) clientRef.current?.sendRawKey(e.keyCode, true);
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -327,9 +438,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       const mapped = VK_MAP[e.code];
       if (mapped?.bit) clientRef.current?.setKeyboardGamepadBit(mapped.bit, false);
-      if (mouseCapture) {
-        clientRef.current?.sendRawKey(e.keyCode, false);
-      }
+      if (mouseCapture) clientRef.current?.sendRawKey(e.keyCode, false);
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -379,8 +488,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           ? 'stream-sharp-high'
           : '';
 
-  const bindVirtualBtn = (bit: number, demoKey?: keyof typeof demoInputRef.current) => ({
+  const bindVirtualBtn = (bit: number, demoKey?: 'a' | 'b' | 'x' | 'y') => ({
     onPointerDown: () => {
+      navigator.vibrate?.(12);
       clientRef.current?.setVirtualButton(bit, true);
       if (demoKey) demoInputRef.current[demoKey] = true;
     },
@@ -404,7 +514,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }}
       className="fixed inset-0 z-50 bg-black flex items-center justify-center overflow-hidden select-none"
     >
-      {/* Video / Demo Canvas */}
       {demoMode ? (
         <canvas
           ref={demoCanvasRef}
@@ -422,7 +531,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         />
       )}
 
-      {/* Connecting / Error Overlay */}
       {(!connected || streamError) && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-black/85 backdrop-blur-md z-20"
@@ -454,27 +562,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         </div>
       )}
 
-      {/* Top HUD Bar */}
       {connected && (
-        <div className="absolute top-3 left-3 right-3 flex items-start justify-between pointer-events-none z-10">
+        <div className="absolute top-3 left-3 right-3 flex items-start justify-between gap-2 pointer-events-none z-10">
           {showStats ? (
-            <div className="pointer-events-auto bg-black/70 backdrop-blur-md border border-white/10 rounded-2xl px-4 py-2 text-xs flex flex-wrap items-center gap-4">
+            <div className="pointer-events-auto bg-black/70 backdrop-blur-md border border-white/10 rounded-2xl px-3 py-1.5 text-[11px] sm:text-xs flex flex-wrap items-center gap-3">
               <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
                 <Activity className="w-3.5 h-3.5" />
                 {telemetry.width}x{telemetry.height}@{Math.round(telemetry.fps || 60)}
               </span>
               <span className="text-[#cbd5e1]">
-                {t(settings.language, 'latency')}: <strong className="text-white">{Math.round(telemetry.rttMs)} ms</strong>
+                <strong className="text-white">{Math.round(telemetry.rttMs)} ms</strong>
               </span>
-              <span className="text-[#cbd5e1]">
-                {t(settings.language, 'bitrate')}:{' '}
+              <span className="hidden sm:inline text-[#cbd5e1]">
                 <strong className="text-white">{telemetry.bitrateMbps.toFixed(1)} Mbps</strong>
               </span>
-              <span className="text-[#cbd5e1]">
-                {t(settings.language, 'packetLoss')}:{' '}
-                <strong className="text-white">{telemetry.packetLossPct.toFixed(1)}%</strong>
-              </span>
-              {regionName && <span className="text-[#9aa4b8]">{regionName}</span>}
+              {regionName && <span className="hidden md:inline text-[#9aa4b8]">{regionName}</span>}
             </div>
           ) : (
             <div />
@@ -499,7 +601,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               className="px-3.5 py-2 rounded-full bg-black/65 hover:bg-black/85 border border-white/15 text-white text-xs font-semibold backdrop-blur-md cursor-pointer flex items-center gap-1.5"
             >
               <SlidersHorizontal className="w-4 h-4" />
-              Menu (ESC)
+              Menu
             </button>
           </div>
         </div>
@@ -511,110 +613,136 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         </div>
       )}
 
-      {/* Virtual On-Screen Touch/Click Gamepad */}
+      {/* Analog Virtual Controller Overlay */}
       {connected && showVirtualPad && (
-        <div className="absolute inset-x-4 bottom-4 flex items-end justify-between pointer-events-none z-10">
-          {/* Left D-Pad */}
-          <div className="pointer-events-auto grid grid-cols-3 gap-1.5 bg-black/55 backdrop-blur-md p-3 rounded-2xl border border-white/15">
-            <div />
-            <button
-              type="button"
-              {...bindVirtualBtn(GamepadButton.DPadUp, 'up')}
-              className="w-12 h-12 rounded-xl bg-white/10 active:bg-emerald-500 text-white font-bold"
-            >
-              ▲
-            </button>
-            <div />
-            <button
-              type="button"
-              {...bindVirtualBtn(GamepadButton.DPadLeft, 'left')}
-              className="w-12 h-12 rounded-xl bg-white/10 active:bg-emerald-500 text-white font-bold"
-            >
-              ◀
-            </button>
-            <div className="w-12 h-12 rounded-xl bg-white/5" />
-            <button
-              type="button"
-              {...bindVirtualBtn(GamepadButton.DPadRight, 'right')}
-              className="w-12 h-12 rounded-xl bg-white/10 active:bg-emerald-500 text-white font-bold"
-            >
-              ▶
-            </button>
-            <div />
-            <button
-              type="button"
-              {...bindVirtualBtn(GamepadButton.DPadDown, 'down')}
-              className="w-12 h-12 rounded-xl bg-white/10 active:bg-emerald-500 text-white font-bold"
-            >
-              ▼
-            </button>
-            <div />
+        <div className="absolute inset-x-3 sm:inset-x-6 bottom-3 sm:bottom-5 flex flex-col gap-3 pointer-events-none z-10">
+          {/* Shoulder & Trigger Row */}
+          <div className="flex items-center justify-between px-2">
+            <div className="pointer-events-auto flex gap-2">
+              <button
+                type="button"
+                onPointerDown={() => clientRef.current?.setVirtualTrigger('left', 1)}
+                onPointerUp={() => clientRef.current?.setVirtualTrigger('left', 0)}
+                onPointerLeave={() => clientRef.current?.setVirtualTrigger('left', 0)}
+                className="px-4 py-1.5 rounded-xl bg-black/60 active:bg-emerald-500 border border-white/20 text-xs font-bold"
+              >
+                L2 / LT
+              </button>
+              <button
+                type="button"
+                {...bindVirtualBtn(GamepadButton.LeftShoulder)}
+                className="px-4 py-1.5 rounded-xl bg-black/60 active:bg-emerald-500 border border-white/20 text-xs font-bold"
+              >
+                L1 / LB
+              </button>
+            </div>
+            <div className="pointer-events-auto flex gap-2">
+              <button
+                type="button"
+                {...bindVirtualBtn(GamepadButton.RightShoulder)}
+                className="px-4 py-1.5 rounded-xl bg-black/60 active:bg-emerald-500 border border-white/20 text-xs font-bold"
+              >
+                R1 / RB
+              </button>
+              <button
+                type="button"
+                onPointerDown={() => clientRef.current?.setVirtualTrigger('right', 1)}
+                onPointerUp={() => clientRef.current?.setVirtualTrigger('right', 0)}
+                onPointerLeave={() => clientRef.current?.setVirtualTrigger('right', 0)}
+                className="px-4 py-1.5 rounded-xl bg-black/60 active:bg-emerald-500 border border-white/20 text-xs font-bold"
+              >
+                R2 / RT
+              </button>
+            </div>
           </div>
 
-          {/* Center Menu / View */}
-          <div className="pointer-events-auto flex items-center gap-2 bg-black/55 backdrop-blur-md px-3 py-2 rounded-full border border-white/15">
-            <button
-              type="button"
-              {...bindVirtualBtn(GamepadButton.View)}
-              className="px-3 py-1.5 rounded-full bg-white/10 active:bg-white/30 text-xs font-bold"
-            >
-              View
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                clientRef.current?.pressNexusButton();
-                setNexusToast(true);
-                setTimeout(() => setNexusToast(false), 1400);
-              }}
-              className="w-9 h-9 rounded-full bg-[#107c10] text-white text-xs font-bold"
-            >
-              X
-            </button>
-            <button
-              type="button"
-              {...bindVirtualBtn(GamepadButton.Menu)}
-              className="px-3 py-1.5 rounded-full bg-white/10 active:bg-white/30 text-xs font-bold"
-            >
-              Menu
-            </button>
-          </div>
+          <div className="flex items-end justify-between gap-2">
+            {/* Left Analog Stick */}
+            <div className="pointer-events-auto flex items-end gap-3">
+              <TouchThumbstick
+                label="LS"
+                onMove={(x, y) => {
+                  clientRef.current?.setVirtualStick('left', x, y);
+                  demoInputRef.current.stickX = x;
+                  demoInputRef.current.stickY = y;
+                }}
+              />
+            </div>
 
-          {/* Right ABXY */}
-          <div className="pointer-events-auto grid grid-cols-3 gap-1.5 bg-black/55 backdrop-blur-md p-3 rounded-2xl border border-white/15">
-            <div />
-            <button
-              type="button"
-              {...bindVirtualBtn(GamepadButton.Y)}
-              className="w-12 h-12 rounded-full bg-amber-500/30 border border-amber-400/60 active:bg-amber-400 text-white font-bold"
-            >
-              Y
-            </button>
-            <div />
-            <button
-              type="button"
-              {...bindVirtualBtn(GamepadButton.X, 'x')}
-              className="w-12 h-12 rounded-full bg-sky-500/30 border border-sky-400/60 active:bg-sky-400 text-white font-bold"
-            >
-              X
-            </button>
-            <div />
-            <button
-              type="button"
-              {...bindVirtualBtn(GamepadButton.B)}
-              className="w-12 h-12 rounded-full bg-rose-500/30 border border-rose-400/60 active:bg-rose-400 text-white font-bold"
-            >
-              B
-            </button>
-            <div />
-            <button
-              type="button"
-              {...bindVirtualBtn(GamepadButton.A, 'a')}
-              className="w-12 h-12 rounded-full bg-emerald-500/30 border border-emerald-400/60 active:bg-emerald-400 text-white font-bold"
-            >
-              A
-            </button>
-            <div />
+            {/* Center View / Xbox / Menu */}
+            <div className="pointer-events-auto flex items-center gap-2 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/15">
+              <button
+                type="button"
+                {...bindVirtualBtn(GamepadButton.View)}
+                className="px-2.5 py-1 rounded-full bg-white/10 active:bg-white/30 text-[11px] font-bold"
+              >
+                View
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.vibrate?.(18);
+                  clientRef.current?.pressNexusButton();
+                  setNexusToast(true);
+                  setTimeout(() => setNexusToast(false), 1400);
+                }}
+                className="w-8 h-8 rounded-full bg-[#107c10] text-white text-xs font-bold"
+              >
+                X
+              </button>
+              <button
+                type="button"
+                {...bindVirtualBtn(GamepadButton.Menu)}
+                className="px-2.5 py-1 rounded-full bg-white/10 active:bg-white/30 text-[11px] font-bold"
+              >
+                Menu
+              </button>
+            </div>
+
+            {/* Right Stick + ABXY */}
+            <div className="pointer-events-auto flex items-end gap-2 sm:gap-3">
+              <div className="hidden sm:block">
+                <TouchThumbstick
+                  label="RS"
+                  onMove={(x, y) => clientRef.current?.setVirtualStick('right', x, y)}
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-1 bg-black/55 backdrop-blur-md p-2.5 rounded-2xl border border-white/15">
+                <div />
+                <button
+                  type="button"
+                  {...bindVirtualBtn(GamepadButton.Y, 'y')}
+                  className="w-11 h-11 rounded-full bg-amber-500/30 border border-amber-400/60 active:bg-amber-400 text-white font-bold"
+                >
+                  Y
+                </button>
+                <div />
+                <button
+                  type="button"
+                  {...bindVirtualBtn(GamepadButton.X, 'x')}
+                  className="w-11 h-11 rounded-full bg-sky-500/30 border border-sky-400/60 active:bg-sky-400 text-white font-bold"
+                >
+                  X
+                </button>
+                <div />
+                <button
+                  type="button"
+                  {...bindVirtualBtn(GamepadButton.B, 'b')}
+                  className="w-11 h-11 rounded-full bg-rose-500/30 border border-rose-400/60 active:bg-rose-400 text-white font-bold"
+                >
+                  B
+                </button>
+                <div />
+                <button
+                  type="button"
+                  {...bindVirtualBtn(GamepadButton.A, 'a')}
+                  className="w-11 h-11 rounded-full bg-emerald-500/30 border border-emerald-400/60 active:bg-emerald-400 text-white font-bold"
+                >
+                  A
+                </button>
+                <div />
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -746,7 +874,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         </div>
       )}
 
-      {/* Virtual Keyboard Modal (ShowVirtualKeyboard from Xbox game) */}
       {kbReq && (
         <div className="fixed inset-0 z-40 bg-black/75 flex items-center justify-center p-4">
           <form

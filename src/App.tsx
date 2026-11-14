@@ -3,6 +3,7 @@ import {
   Clock,
   Gamepad2,
   HardDrive,
+  Link2,
   LogOut,
   Play,
   RefreshCw,
@@ -11,6 +12,7 @@ import {
   Sliders,
   Sparkles,
   Tv,
+  Users,
   X,
 } from 'lucide-react';
 import { BrandMark, GamerscoreBadge } from './components/BrandMark';
@@ -20,7 +22,7 @@ import { GameDetailsModal } from './components/GameDetailsModal';
 import { SignInScreen } from './components/SignInScreen';
 import { StreamPlayer } from './components/StreamPlayer';
 import { LANG_OPTIONS, t, type LangCode } from './i18n/translations';
-import { psboxApi } from './services/psboxApi';
+import { getRelayUrl, psboxApi, setRelayUrl } from './services/psboxApi';
 import type {
   AppSettings,
   CatalogProduct,
@@ -87,6 +89,9 @@ export function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMkb, setFilterMkb] = useState(false);
   const [filterFree, setFilterFree] = useState(false);
+  const [selectedGenre, setSelectedGenre] = useState<string>('All');
+  const [relayInput, setRelayInput] = useState(() => getRelayUrl());
+  const [relaySaved, setRelaySaved] = useState(false);
   const [connectedPads, setConnectedPads] = useState(0);
 
   const [activeStream, setActiveStream] = useState<{
@@ -222,6 +227,31 @@ export function App() {
     () => settings.hidden.map((id) => productById.get(id)).filter((p): p is CatalogProduct => Boolean(p)),
     [settings.hidden, productById],
   );
+
+  const availableGenres = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of visibleProducts) {
+      for (const c of p.categories) {
+        counts.set(c, (counts.get(c) ?? 0) + 1);
+      }
+    }
+    return ['All', ...Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 7).map((e) => e[0])];
+  }, [visibleProducts]);
+
+  const filteredCatalog = useMemo(() => {
+    if (selectedGenre === 'All') return visibleProducts;
+    return visibleProducts.filter((p) => p.categories.includes(selectedGenre));
+  }, [visibleProducts, selectedGenre]);
+
+  const friendsPlaying = useMemo(() => {
+    const entries: Array<{ product: CatalogProduct; gamertag: string; presenceText: string }> = [];
+    for (const p of visibleProducts) {
+      for (const f of p.friends ?? []) {
+        entries.push({ product: p, gamertag: f.gamertag, presenceText: f.presenceText });
+      }
+    }
+    return entries;
+  }, [visibleProducts]);
 
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -380,8 +410,8 @@ export function App() {
             </div>
           </div>
 
-          {/* Center: Navigation Pills */}
-          <nav className="flex items-center gap-1.5 bg-white/5 p-1 rounded-full border border-white/10">
+          {/* Center: Navigation Pills (Desktop/Tablet) */}
+          <nav className="hidden sm:flex items-center gap-1.5 bg-white/5 p-1 rounded-full border border-white/10">
             {(
               [
                 ['gamepass', t(settings.language, 'tabGamePass')],
@@ -453,13 +483,13 @@ export function App() {
               <img
                 src={profile.gamerpicUrl || './assets/icon0.png'}
                 alt={profile.gamertag}
-                className="w-10 h-10 rounded-full object-cover border border-white/20 bg-[#1b2028]"
+                className="w-9 h-9 sm:w-10 sm:h-10 rounded-full object-cover border border-white/20 bg-[#1b2028]"
               />
               <button
                 type="button"
                 onClick={handleSignOut}
                 className="p-2 rounded-full bg-white/5 hover:bg-rose-500/20 border border-white/10 text-[#b4bcc8] hover:text-rose-200 cursor-pointer"
-                title={t(settings.language, 'signOut')}
+                title={demoMode ? 'Sign in with Microsoft / Switch Account' : t(settings.language, 'signOut')}
               >
                 <LogOut className="w-4 h-4" />
               </button>
@@ -469,12 +499,12 @@ export function App() {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 max-w-[1480px] w-full mx-auto px-4 sm:px-8 pb-16">
+      <main className="flex-1 max-w-[1480px] w-full mx-auto px-4 sm:px-8 pb-24 sm:pb-16">
         {/* GAME PASS TAB */}
         {tab === 'gamepass' && (
-          <div className="space-y-8 pt-6">
+          <div className="space-y-8 pt-4 sm:pt-6">
             {featured && (
-              <section className="relative rounded-3xl overflow-hidden border border-white/10 min-h-[340px] sm:min-h-[400px] flex items-end shadow-2xl">
+              <section className="relative rounded-3xl overflow-hidden border border-white/10 min-h-[300px] sm:min-h-[400px] flex items-end shadow-2xl">
                 <img
                   src={featured.heroUrl || featured.posterUrl || featured.tileUrl}
                   alt={featured.title}
@@ -483,7 +513,7 @@ export function App() {
                 <div className="absolute inset-0 bg-gradient-to-r from-[#0c0e10] via-[#0c0e10]/75 to-transparent" />
                 <div className="absolute inset-0 bg-gradient-to-t from-[#0c0e10] via-transparent to-black/30" />
 
-                <div className="relative z-10 p-6 sm:p-10 max-w-2xl space-y-4">
+                <div className="relative z-10 p-5 sm:p-10 max-w-2xl space-y-3 sm:space-y-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#107c10] text-xs font-bold">
                       <Sparkles className="w-3.5 h-3.5" />
@@ -501,11 +531,11 @@ export function App() {
                       </span>
                     )}
                   </div>
-                  <h2 className="text-3xl sm:text-5xl font-bold text-white tracking-tight">
+                  <h2 className="text-2xl sm:text-5xl font-bold text-white tracking-tight">
                     {featured.title}
                   </h2>
                   {featured.description && (
-                    <p className="text-sm sm:text-base text-[#cbd5e1] line-clamp-2">
+                    <p className="text-xs sm:text-base text-[#cbd5e1] line-clamp-2">
                       {featured.description}
                     </p>
                   )}
@@ -513,7 +543,7 @@ export function App() {
                     <button
                       type="button"
                       onClick={() => launchGame(featured)}
-                      className="psbox-btn psbox-btn-primary px-7 py-3 text-sm sm:text-base"
+                      className="psbox-btn psbox-btn-primary px-6 sm:px-7 py-2.5 sm:py-3 text-sm sm:text-base"
                     >
                       <Play className="w-4 h-4 fill-white" />
                       {t(settings.language, 'play')}
@@ -526,6 +556,61 @@ export function App() {
                       Details
                     </button>
                   </div>
+                </div>
+              </section>
+            )}
+
+            {/* Genre Quick Filter Strip */}
+            {availableGenres.length > 1 && (
+              <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+                {availableGenres.map((genre) => (
+                  <button
+                    key={genre}
+                    type="button"
+                    onClick={() => setSelectedGenre(genre)}
+                    className={`px-4 py-1.5 rounded-full text-xs font-semibold shrink-0 border transition-all cursor-pointer ${
+                      selectedGenre === genre
+                        ? 'bg-[#107c10] border-emerald-400 text-white shadow'
+                        : 'bg-white/5 border-white/10 text-[#b4bcc8] hover:text-white'
+                    }`}
+                  >
+                    {genre}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Friends Online Quick Strip */}
+            {friendsPlaying.length > 0 && selectedGenre === 'All' && (
+              <section className="space-y-3">
+                <div className="flex items-center gap-2 px-1">
+                  <Users className="w-4 h-4 text-emerald-400" />
+                  <h3 className="text-base font-bold text-white tracking-tight">Friends Playing Now</h3>
+                </div>
+                <div className="flex gap-3 overflow-x-auto pb-1">
+                  {friendsPlaying.map((fp) => (
+                    <button
+                      key={`${fp.gamertag}-${fp.product.productId}`}
+                      type="button"
+                      onClick={() => setDetailsProduct(fp.product)}
+                      className="flex items-center gap-3 bg-[#15191e] hover:bg-[#1b212a] border border-white/10 rounded-2xl px-3.5 py-2.5 shrink-0 text-left transition-all cursor-pointer"
+                    >
+                      <div className="relative">
+                        <img
+                          src={fp.product.tileUrl}
+                          alt={fp.product.title}
+                          className="w-10 h-10 rounded-xl object-cover"
+                        />
+                        <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[#15191e]" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-white">{fp.gamertag}</div>
+                        <div className="text-[11px] text-[#9aa4b8] max-w-[180px] truncate">
+                          {fp.presenceText || fp.product.title}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               </section>
             )}
@@ -546,12 +631,36 @@ export function App() {
               </div>
             )}
 
-            {renderRow(t(settings.language, 'jumpBackIn'), recentGames)}
-            {renderRow(t(settings.language, 'wishlist'), wishlistGames)}
-            {renderRow(t(settings.language, 'mostPopular'), popularGames)}
-            {renderRow(t(settings.language, 'recentlyAdded'), addedGames)}
-            {renderRow(t(settings.language, 'freeToPlay'), freeGames)}
-            {renderRow(t(settings.language, 'allGames'), visibleProducts)}
+            {selectedGenre === 'All' ? (
+              <>
+                {renderRow(t(settings.language, 'jumpBackIn'), recentGames)}
+                {renderRow(t(settings.language, 'wishlist'), wishlistGames)}
+                {renderRow(t(settings.language, 'mostPopular'), popularGames)}
+                {renderRow(t(settings.language, 'recentlyAdded'), addedGames)}
+                {renderRow(t(settings.language, 'freeToPlay'), freeGames)}
+                {renderRow(t(settings.language, 'allGames'), visibleProducts)}
+              </>
+            ) : (
+              <section className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-bold text-white">{selectedGenre}</h3>
+                  <span className="text-xs text-[#9aa4b8]">{filteredCatalog.length} titles</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-5">
+                  {filteredCatalog.map((g) => (
+                    <GameCard
+                      key={g.productId}
+                      product={g}
+                      size="compact"
+                      wishlisted={settings.wishlist.includes(g.productId)}
+                      playtimeSec={settings.playtimeSecByProduct[g.productId] ?? 0}
+                      onFocus={() => setHeroProduct(g)}
+                      onClick={() => setDetailsProduct(g)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         )}
 
@@ -844,6 +953,48 @@ export function App() {
               </div>
             </div>
 
+            <div className="bg-[#15191e] border border-white/10 rounded-2xl p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-bold text-white">
+                  <Link2 className="w-4 h-4 text-emerald-400" />
+                  Microsoft Account Relay (GitHub Pages)
+                </div>
+                {demoMode && (
+                  <button
+                    type="button"
+                    onClick={handleSignOut}
+                    className="psbox-btn psbox-btn-primary text-xs"
+                  >
+                    Switch to Microsoft Sign-In
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-[#9aa4b8] leading-relaxed">
+                Configure your Cloudflare Worker CORS Relay URL (from <code>cloudflare-worker/worker.js</code>) to
+                use real Microsoft Sign-In and live Xbox Cloud Gaming directly from GitHub Pages.
+              </p>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setRelayUrl(relayInput);
+                  setRelaySaved(true);
+                  setTimeout(() => setRelaySaved(false), 2000);
+                }}
+                className="flex flex-col sm:flex-row gap-2"
+              >
+                <input
+                  type="url"
+                  value={relayInput}
+                  onChange={(e) => setRelayInput(e.target.value)}
+                  placeholder="https://psbox-relay.your-name.workers.dev"
+                  className="flex-1 bg-[#0d1117] border border-white/15 focus:border-emerald-500 rounded-xl px-3.5 py-2 text-sm text-white outline-none"
+                />
+                <button type="submit" className="psbox-btn text-xs shrink-0">
+                  {relaySaved ? 'Saved!' : 'Save Relay URL'}
+                </button>
+              </form>
+            </div>
+
             <ControllerTester
               deadzone={settings.deadzone}
               onDeadzoneChange={(dz) => updateSettings({ deadzone: dz })}
@@ -851,6 +1002,37 @@ export function App() {
           </div>
         )}
       </main>
+
+      {/* Mobile Bottom Navigation Dock */}
+      <nav
+        className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-[#0d1116]/95 backdrop-blur-xl border-t border-white/10 px-2 pt-1.5 flex items-center justify-around"
+        style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
+      >
+        {(
+          [
+            ['gamepass', 'Game Pass', Sparkles],
+            ['yourgames', 'My Games', Gamepad2],
+            ['consoles', 'Consoles', Tv],
+            ['search', 'Search', Search],
+            ['settings', 'Settings', SettingsIcon],
+          ] as const
+        ).map(([key, label, Icon]) => {
+          const active = tab === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              className={`flex flex-col items-center gap-0.5 px-2.5 py-1 rounded-xl text-[10px] font-semibold transition-colors cursor-pointer ${
+                active ? 'text-emerald-400' : 'text-[#9aa4b8]'
+              }`}
+            >
+              <Icon className="w-5 h-5" />
+              <span>{label}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       {/* Details Modal */}
       {detailsProduct && (
