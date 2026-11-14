@@ -25,17 +25,17 @@
 }
 
 :root {
-  --psbox-bg: #0c0e10;
-  --psbox-bg-top: #181c18;
-  --psbox-panel: #15191e;
-  --psbox-surface: #1b2028;
-  --psbox-border: rgba(255, 255, 255, 0.1);
+  --psbox-bg: #0e0e0e;
+  --psbox-bg-top: rgb(24, 28, 24);
+  --psbox-panel: #242424;
+  --psbox-surface: #2c2c2c;
+  --psbox-border: rgba(255, 255, 255, 0.12);
   --psbox-green: #107c10;
   --psbox-green-bright: #16a34a;
   --psbox-green-glow: rgba(16, 124, 16, 0.45);
-  --psbox-text: #f8fafc;
-  --psbox-gray: #b4bcc8;
-  --psbox-dim: #7b8494;
+  --psbox-text: #ffffff;
+  --psbox-gray: #bebebe;
+  --psbox-dim: #8c8c8c;
 }
 
 * {
@@ -55,15 +55,14 @@ body,
 }
 
 .psbox-shell-bg {
-  background: radial-gradient(circle at 80% 15%, rgba(16, 124, 16, 0.16) 0%, transparent 45%),
-    linear-gradient(180deg, var(--psbox-bg-top) 0%, var(--psbox-bg) 420px);
+  background: linear-gradient(180deg, rgb(24, 28, 24) 0%, #0e0e0e 100%);
 }
 
 .psbox-row-scroll {
   display: flex;
-  gap: 16px;
+  gap: 20px;
   overflow-x: auto;
-  padding: 8px 4px 16px 4px;
+  padding: 10px 8px 18px 8px;
   scroll-behavior: smooth;
   scroll-snap-type: x proximity;
   -webkit-overflow-scrolling: touch;
@@ -95,11 +94,10 @@ body,
 
 .psbox-card {
   position: relative;
-  border-radius: 12px;
+  border-radius: 10px;
   overflow: hidden;
-  background: #1a1f24;
-  border: 2px solid transparent;
-  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.18s ease, box-shadow 0.18s ease;
+  background: #2c2c2c;
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.18s ease;
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -107,9 +105,8 @@ body,
 .psbox-card:hover,
 .psbox-card:focus-visible,
 .psbox-card.active {
-  transform: translateY(-4px) scale(1.03);
-  border-color: #ffffff;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.2);
+  transform: scale(1.02);
+  box-shadow: 0 0 0 4px #0e0e0e, 0 0 0 7.5px #ffffff, 0 18px 40px rgba(0, 0, 0, 0.75);
   outline: none;
 }
 

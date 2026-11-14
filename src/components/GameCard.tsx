@@ -38,7 +38,7 @@ export const GameCard: React.FC<GameCardProps> = ({
   onClick,
   size = 'normal',
 }) => {
-  const dim = size === 'compact' ? 'w-44 h-44 sm:w-48 sm:h-48' : 'w-48 h-48 sm:w-56 sm:h-56';
+  const dim = size === 'compact' ? 'w-full aspect-square' : 'w-44 h-44 sm:w-52 sm:h-52';
   const badge = planLabel(product.plan);
   const friends = product.friends ?? [];
 
