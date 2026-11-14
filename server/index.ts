@@ -39,6 +39,7 @@ import {
 } from './xcloud/gssv.ts';
 import {
   fetchCatalogProducts,
+  fetchDisplayCatalogProducts,
   fetchFriendsPresence,
   fetchSiglList,
   fetchTitlePlatforms,
@@ -326,6 +327,13 @@ app.get('/api/xcloud/library', async (req, res) => {
     for (const t of allTitles.slice(0, 120)) if (t.productId) productIdsToHydrate.add(t.productId);
 
     const productMap = await fetchCatalogProducts(Array.from(productIdsToHydrate), market, lang, true);
+    const missingIds = Array.from(productIdsToHydrate).filter((id) => !productMap[id]);
+    if (missingIds.length > 0) {
+      const dcMap = await fetchDisplayCatalogProducts(missingIds.slice(0, 40), market, lang);
+      for (const [k, v] of Object.entries(dcMap)) {
+        if (!productMap[k]) productMap[k] = v;
+      }
+    }
 
     const gssvByProduct = new Map(allTitles.filter((t) => t.productId).map((t) => [t.productId, t]));
     const xboxIds = Array.from(

@@ -111,33 +111,107 @@ export async function fetchCatalogProducts(
     if (!res.ok) continue;
     const j = (await res.json()) as { Products?: Record<string, Record<string, unknown>> };
     for (const [id, p] of Object.entries(j.Products ?? {})) {
-      const imgs = (p.ImageTile || p.Images || {}) as Record<string, Record<string, unknown>>;
+      const imgs = (p.Images || {}) as Record<string, Record<string, unknown>>;
       const hero = fixImg(
-        (p.ImageHero as { URL?: string } | undefined)?.URL ?? imgs.TitledHeroArt?.URL ?? imgs.SuperHeroArt?.URL,
+        (p.Image_Hero as { URL?: string } | undefined)?.URL ??
+          (p.Image_TitledHero as { URL?: string } | undefined)?.URL ??
+          (p.ImageHero as { URL?: string } | undefined)?.URL ??
+          imgs.TitledHeroArt?.URL ??
+          imgs.SuperHeroArt?.URL,
       );
       const tile = fixImg(
-        (p.ImageTile as { URL?: string } | undefined)?.URL ?? imgs.BoxArt?.URL ?? imgs.Logo?.URL,
+        (p.Image_Tile as { URL?: string } | undefined)?.URL ??
+          (p.ImageTile as { URL?: string } | undefined)?.URL ??
+          imgs.BoxArt?.URL ??
+          imgs.Logo?.URL,
       );
       const poster = fixImg(
-        (p.ImagePoster as { URL?: string } | undefined)?.URL ?? imgs.Poster?.URL ?? tile,
+        (p.Image_Poster as { URL?: string } | undefined)?.URL ??
+          (p.ImagePoster as { URL?: string } | undefined)?.URL ??
+          imgs.Poster?.URL ??
+          tile,
       );
       const rating = (p.ContentRating as Record<string, unknown> | undefined) ?? {};
       const childIds = Array.isArray(p.ChildXboxTitleIds) ? (p.ChildXboxTitleIds as string[]) : [];
+      const cats = Array.isArray(p.LocalizedCategories)
+        ? (p.LocalizedCategories as string[])
+        : Array.isArray(p.Categories)
+          ? (p.Categories as string[])
+          : [];
+      const title = String(p.ProductTitle ?? '');
+      const xcloudTitleId = String(p.XCloudTitleId ?? '');
+      if (
+        /ARTBOOK|SOUNDTRACK|DIGITALSTORYART|INSTALLPACK|DIGITALEXTRAS|BONUSCONTENT/i.test(xcloudTitleId) ||
+        /\b(soundtrack|artbook|digital art book)\b/i.test(title)
+      ) {
+        continue;
+      }
       out[id] = {
         productId: id,
-        xcloudTitleId: String(p.XCloudTitleId ?? ''),
+        xcloudTitleId,
         xboxTitleId: String(p.XboxTitleId ?? childIds[0] ?? ''),
-        title: String(p.ProductTitle ?? ''),
+        title,
         publisher: String(p.PublisherName ?? ''),
-        description: String(p.ProductDescription ?? ''),
+        description: String(p.ProductDescription || p.ProductDescriptionShort || ''),
         tileUrl: tile || poster || hero,
-        posterUrl: poster || tile,
+        posterUrl: poster || tile || hero,
         heroUrl: hero || poster || tile,
-        categories: Array.isArray(p.Categories) ? (p.Categories as string[]) : [],
+        categories: cats,
         plan: parsePlan(p.PassMetadataByPassProductId as Record<string, unknown> | undefined),
         ratingAge: String(rating.LongName ?? rating.RatingId ?? rating.Age ?? ''),
         ratingSystem: String(rating.RatingSystem ?? ''),
       };
+    }
+  }
+  return out;
+}
+
+export async function fetchDisplayCatalogProducts(
+  ids: string[],
+  market = 'US',
+  language = 'en-US',
+): Promise<Record<string, CatalogProduct>> {
+  const out: Record<string, CatalogProduct> = {};
+  for (let i = 0; i < ids.length; i += 20) {
+    const batch = ids.slice(i, i + 20);
+    try {
+      const url = `https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds=${encodeURIComponent(batch.join(','))}&market=${encodeURIComponent(market)}&languages=${encodeURIComponent(language)}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) continue;
+      const j = (await res.json()) as { Products?: Array<Record<string, unknown>> };
+      for (const p of j.Products ?? []) {
+        const pid = String(p.ProductId ?? '');
+        if (!pid) continue;
+        const loc = ((p.LocalizedProperties as Array<Record<string, unknown>> | undefined) ?? [])[0] ?? {};
+        const imgs = Array.isArray(loc.Images) ? (loc.Images as Array<Record<string, unknown>>) : [];
+        const findImg = (purposes: string[]) => {
+          for (const purp of purposes) {
+            const found = imgs.find((im) => im.ImagePurpose === purp && typeof im.Uri === 'string');
+            if (found) return fixImg(found.Uri);
+          }
+          return '';
+        };
+        const tile = findImg(['BoxArt', 'Tile', 'Poster']);
+        const poster = findImg(['Poster', 'BoxArt', 'Tile']);
+        const hero = findImg(['SuperHeroArt', 'TitledHeroArt', 'Hero', 'Poster']) || tile;
+        out[pid] = {
+          productId: pid,
+          xcloudTitleId: '',
+          xboxTitleId: '',
+          title: String(loc.ProductTitle ?? pid),
+          publisher: String(loc.PublisherName ?? ''),
+          description: String(loc.ProductDescription || loc.ShortDescription || ''),
+          tileUrl: tile || poster || hero,
+          posterUrl: poster || tile || hero,
+          heroUrl: hero || poster || tile,
+          categories: [],
+          plan: 3,
+          ratingAge: '',
+          ratingSystem: '',
+        };
+      }
+    } catch {
+      // non-fatal
     }
   }
   return out;

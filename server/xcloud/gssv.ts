@@ -242,9 +242,20 @@ export async function listGssvTitles(
       const supportedInputs = Array.isArray(details.supportedInputTypes)
         ? (details.supportedInputTypes as string[])
         : [];
+      const altIds = Array.isArray(details.alternateProductIds)
+        ? (details.alternateProductIds as string[])
+        : [];
+      const productId = String(details.productId || altIds[0] || '');
+      const titleId = String(item.titleId ?? '');
+      if (
+        !titleId ||
+        /ARTBOOK|SOUNDTRACK|DIGITALSTORYART|INSTALLPACK|DIGITALEXTRAS|BONUSCONTENT/i.test(titleId)
+      ) {
+        continue;
+      }
       out.push({
-        titleId: String(item.titleId ?? ''),
-        productId: String(details.productId ?? ''),
+        titleId,
+        productId,
         xboxTitleId: String(details.xboxTitleId ?? ''),
         name: '',
         imageUrl: '',

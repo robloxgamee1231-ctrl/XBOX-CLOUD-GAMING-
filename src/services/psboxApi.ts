@@ -621,7 +621,14 @@ export const psboxApi = {
     const titlesJson = (await titlesRes.json()) as {
       results?: Array<{
         titleId?: string;
-        details?: { productId?: string; xboxTitleId?: string; supportedInputTypes?: string[] };
+        details?: {
+          productId?: string;
+          alternateProductIds?: string[];
+          xboxTitleId?: string;
+          supportedInputTypes?: string[];
+          userPrograms?: string[];
+          hasEntitlement?: boolean;
+        };
       }>;
     };
     const mruJson = mruRes?.ok
@@ -680,14 +687,21 @@ export const psboxApi = {
       { titleId: string; xboxTitleId: string; mkb: boolean; touch: boolean }
     >();
     for (const item of titlesJson.results ?? []) {
-      const pid = item.details?.productId || '';
-      if (!pid) continue;
+      const pid = item.details?.productId || item.details?.alternateProductIds?.[0] || '';
+      const tid = item.titleId || '';
+      if (
+        !pid ||
+        !tid ||
+        /ARTBOOK|SOUNDTRACK|DIGITALSTORYART|INSTALLPACK|DIGITALEXTRAS|BONUSCONTENT/i.test(tid)
+      ) {
+        continue;
+      }
       const inputs = item.details?.supportedInputTypes ?? [];
       gssvByProduct.set(pid, {
-        titleId: item.titleId || '',
+        titleId: tid,
         xboxTitleId: String(item.details?.xboxTitleId ?? ''),
-        mkb: inputs.includes('MKB'),
-        touch: inputs.includes('CustomTouchOverlay') || inputs.includes('GenericTouch'),
+        mkb: inputs.some((x) => /mkb|mouse|keyboard/i.test(x)),
+        touch: inputs.some((x) => /touch/i.test(x)),
       });
     }
 
@@ -727,18 +741,41 @@ export const psboxApi = {
       if (!prodRes.ok) continue;
       const prodJson = (await prodRes.json()) as { Products?: Record<string, Record<string, unknown>> };
       for (const [id, p] of Object.entries(prodJson.Products ?? {})) {
-        const imgs = (p.ImageTile || p.Images || {}) as Record<string, Record<string, unknown>>;
+        const imgs = (p.Images || {}) as Record<string, Record<string, unknown>>;
         const hero = fixImgUrl(
-          (p.ImageHero as { URL?: string } | undefined)?.URL ?? imgs.TitledHeroArt?.URL ?? imgs.SuperHeroArt?.URL,
+          (p.Image_Hero as { URL?: string } | undefined)?.URL ??
+            (p.Image_TitledHero as { URL?: string } | undefined)?.URL ??
+            (p.ImageHero as { URL?: string } | undefined)?.URL ??
+            imgs.TitledHeroArt?.URL ??
+            imgs.SuperHeroArt?.URL,
         );
         const tile = fixImgUrl(
-          (p.ImageTile as { URL?: string } | undefined)?.URL ?? imgs.BoxArt?.URL ?? imgs.Logo?.URL,
+          (p.Image_Tile as { URL?: string } | undefined)?.URL ??
+            (p.ImageTile as { URL?: string } | undefined)?.URL ??
+            imgs.BoxArt?.URL ??
+            imgs.Logo?.URL,
         );
         const poster = fixImgUrl(
-          (p.ImagePoster as { URL?: string } | undefined)?.URL ?? imgs.Poster?.URL ?? tile,
+          (p.Image_Poster as { URL?: string } | undefined)?.URL ??
+            (p.ImagePoster as { URL?: string } | undefined)?.URL ??
+            imgs.Poster?.URL ??
+            tile,
         );
         const rating = (p.ContentRating as Record<string, unknown> | undefined) ?? {};
         const childIds = Array.isArray(p.ChildXboxTitleIds) ? (p.ChildXboxTitleIds as string[]) : [];
+        const cats = Array.isArray(p.LocalizedCategories)
+          ? (p.LocalizedCategories as string[])
+          : Array.isArray(p.Categories)
+            ? (p.Categories as string[])
+            : [];
+        const title = String(p.ProductTitle || '');
+        const xcloudTitleId = String(p.XCloudTitleId || gssvByProduct.get(id)?.titleId || '');
+        if (
+          /ARTBOOK|SOUNDTRACK|DIGITALSTORYART|INSTALLPACK|DIGITALEXTRAS|BONUSCONTENT/i.test(xcloudTitleId) ||
+          /\b(soundtrack|artbook|digital art book)\b/i.test(title)
+        ) {
+          continue;
+        }
         const gssv = gssvByProduct.get(id);
         const xboxTitleId = String(p.XboxTitleId ?? gssv?.xboxTitleId ?? childIds[0] ?? '');
         const isF2p = f2pSet.has(id);
@@ -748,15 +785,15 @@ export const psboxApi = {
 
         products.push({
           productId: id,
-          xcloudTitleId: String(p.XCloudTitleId || gssv?.titleId || ''),
+          xcloudTitleId,
           xboxTitleId,
-          title: String(p.ProductTitle || ''),
+          title,
           publisher: String(p.PublisherName || ''),
-          description: String(p.ProductDescription || ''),
+          description: String(p.ProductDescription || p.ProductDescriptionShort || ''),
           tileUrl: tile || poster || hero,
-          posterUrl: poster || tile,
+          posterUrl: poster || tile || hero,
           heroUrl: hero || poster || tile,
-          categories: Array.isArray(p.Categories) ? (p.Categories as string[]) : [],
+          categories: cats,
           plan: parsePlan(p.PassMetadataByPassProductId as Record<string, unknown> | undefined, isF2p),
           ratingAge: String(rating.LongName ?? rating.RatingId ?? rating.Age ?? ''),
           ratingSystem: String(rating.RatingSystem ?? ''),
@@ -767,6 +804,59 @@ export const psboxApi = {
           platform: 'XSX',
           friends: titleFriends,
         });
+      }
+    }
+
+    // Hydrate any owned/unlisted GSSV titles via displaycatalog.mp.microsoft.com
+    const hydratedSet = new Set(products.map((p) => p.productId));
+    const missingOwned = Array.from(gssvByProduct.keys()).filter((pid) => !hydratedSet.has(pid));
+    for (let i = 0; i < Math.min(missingOwned.length, 40); i += 20) {
+      const chunk = missingOwned.slice(i, i + 20);
+      try {
+        const dcRes = await relayFetch(
+          `https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds=${chunk.join(',')}&market=${login.market}&languages=${encodeURIComponent(locale)}`,
+        );
+        if (!dcRes.ok) continue;
+        const dcJson = (await dcRes.json()) as { Products?: Array<Record<string, unknown>> };
+        for (const p of dcJson.Products ?? []) {
+          const pid = String(p.ProductId ?? '');
+          const loc = ((p.LocalizedProperties as Array<Record<string, unknown>> | undefined) ?? [])[0] ?? {};
+          const imgs = Array.isArray(loc.Images) ? (loc.Images as Array<Record<string, unknown>>) : [];
+          const findImg = (purposes: string[]) => {
+            for (const purp of purposes) {
+              const found = imgs.find((im) => im.ImagePurpose === purp && typeof im.Uri === 'string');
+              if (found) return fixImgUrl(found.Uri);
+            }
+            return '';
+          };
+          const tile = findImg(['BoxArt', 'Tile', 'Poster']);
+          const poster = findImg(['Poster', 'BoxArt', 'Tile']);
+          const hero = findImg(['SuperHeroArt', 'TitledHeroArt', 'Hero', 'Poster']) || tile;
+          const gssv = gssvByProduct.get(pid);
+          if (!pid || !gssv) continue;
+          products.push({
+            productId: pid,
+            xcloudTitleId: gssv.titleId,
+            xboxTitleId: gssv.xboxTitleId,
+            title: String(loc.ProductTitle || pid),
+            publisher: String(loc.PublisherName || ''),
+            description: String(loc.ProductDescription || loc.ShortDescription || ''),
+            tileUrl: tile || poster || hero,
+            posterUrl: poster || tile || hero,
+            heroUrl: hero || poster || tile,
+            categories: [],
+            plan: f2pSet.has(pid) ? 0 : 3,
+            ratingAge: '',
+            ratingSystem: '',
+            isFreeToPlay: f2pSet.has(pid),
+            playable: true,
+            mouseKeyboard: gssv.mkb,
+            touch: gssv.touch,
+            platform: 'XSX',
+          });
+        }
+      } catch {
+        // ignore fallback batch error
       }
     }
 
