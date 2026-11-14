@@ -32,6 +32,8 @@ jobs:
         run: npm ci
 
       - name: Build static site for GitHub Pages
+        env:
+          VITE_PSBOX_RELAY_URL: ${{ vars.PSBOX_RELAY_URL }}
         run: npm run build:pages
 
       - name: Upload Pages artifact

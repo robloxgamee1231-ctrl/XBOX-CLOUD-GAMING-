@@ -1,5 +1,6 @@
 import React from 'react';
 import { Gamepad2, Keyboard, Lock, ShoppingBag, Star } from 'lucide-react';
+import { makePosterFallbackUri } from '../data/demoCatalog';
 import type { CatalogProduct } from '../types';
 
 interface GameCardProps {
@@ -54,6 +55,13 @@ export const GameCard: React.FC<GameCardProps> = ({
         src={product.tileUrl || product.posterUrl || product.heroUrl}
         alt={product.title}
         loading="lazy"
+        onError={(e) => {
+          const el = e.currentTarget;
+          if (!el.dataset.fallback) {
+            el.dataset.fallback = '1';
+            el.src = makePosterFallbackUri(product.title, product.publisher);
+          }
+        }}
         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
       />
 

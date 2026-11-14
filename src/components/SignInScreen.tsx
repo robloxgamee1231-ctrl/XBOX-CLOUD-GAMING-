@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 import {
   Check,
   ChevronDown,
@@ -84,7 +85,18 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
   const [copied, setCopied] = useState(false);
   const [copiedWorker, setCopiedWorker] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
+  const [defaultQr, setDefaultQr] = useState('');
   const pollTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    QRCode.toDataURL('https://www.microsoft.com/link', {
+      margin: 2,
+      width: 280,
+      color: { dark: '#0b0e14', light: '#ffffff' },
+    })
+      .then(setDefaultQr)
+      .catch(() => {});
+  }, []);
 
   const requestNewCode = async () => {
     if (pollTimer.current) window.clearTimeout(pollTimer.current);
@@ -285,33 +297,59 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
             </div>
           ) : needsRelay ? (
             <div className="space-y-4 mt-4">
-              <p className="text-sm text-[#b4bcc8] leading-relaxed">
-                Jump straight in with the instant browser preview, or connect your personal Cloudflare Worker relay
-                to sign in with your real Microsoft / Xbox account on GitHub Pages.
-              </p>
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-[#9aa4b8] mb-2">
+                  {t(lang, 'signInStep1')}
+                </div>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <a
+                    href="https://www.microsoft.com/link"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="psbox-btn text-sm"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    {t(lang, 'openLink')} (microsoft.com/link)
+                  </a>
+                  <button
+                    type="button"
+                    onClick={handleDemoMode}
+                    disabled={demoLoading}
+                    className="psbox-btn psbox-btn-primary text-sm"
+                  >
+                    <Play className="w-4 h-4 fill-white" />
+                    {demoLoading ? 'Launching...' : 'Browse Real Cloud Games (Demo)'}
+                  </button>
+                </div>
+              </div>
 
-              {/* Big Instant Play CTA */}
-              <button
-                type="button"
-                onClick={handleDemoMode}
-                disabled={demoLoading}
-                className="w-full psbox-btn psbox-btn-primary py-3.5 text-base justify-center"
-              >
-                <Play className="w-4 h-4 fill-white" />
-                {demoLoading ? 'Launching...' : 'Play Now (Browser Preview & Demo Library)'}
-              </button>
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-[#9aa4b8] mb-2">
+                  {t(lang, 'signInStep2')} (Requires Relay on GitHub Pages)
+                </div>
+                <div className="flex items-center gap-1 bg-[#0b0e14] border border-white/15 rounded-2xl px-3 py-2.5 w-fit opacity-75">
+                  {'••••••••'.split('').map((ch, idx) => (
+                    <span
+                      key={idx}
+                      className="w-8 h-10 sm:w-9 sm:h-11 flex items-center justify-center rounded-lg bg-[#1b212c] border border-white/10 text-xl font-bold text-[#7b8494] font-mono"
+                    >
+                      {ch}
+                    </span>
+                  ))}
+                </div>
+              </div>
 
               {/* Microsoft Account Relay Box */}
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 sm:p-5 space-y-3">
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                  <div className="flex items-center gap-2 text-xs sm:text-sm font-semibold text-white">
                     <Link2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                    Sign in with Real Microsoft Account
+                    Unlock Live Microsoft Sign-In &amp; Cloud Streaming
                   </div>
                   <button
                     type="button"
                     onClick={() => setShowRelayHelp((v) => !v)}
-                    className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer"
+                    className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer shrink-0"
                   >
                     {showRelayHelp ? 'Hide Worker Code' : 'Get Free Worker Code'}
                     {showRelayHelp ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
@@ -321,8 +359,9 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
                 {showRelayHelp && (
                   <div className="space-y-2 pt-1">
                     <p className="text-xs text-[#b4bcc8] leading-relaxed">
-                      Deploy a free Cloudflare Worker at <code>dash.cloudflare.com</code> with this code, then paste
-                      its <code>*.workers.dev</code> URL below:
+                      Because static browsers block direct CORS requests to <code>login.live.com</code>, deploy this
+                      free Cloudflare Worker at <code>dash.cloudflare.com</code> and paste its URL below (or set
+                      GitHub Actions variable <code>PSBOX_RELAY_URL</code>):
                     </p>
                     <div className="relative">
                       <pre className="bg-[#0b0e14] border border-white/10 rounded-xl p-3 text-[10px] text-emerald-200 overflow-x-auto max-h-32">
@@ -348,8 +387,8 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
                     placeholder="https://psbox-relay.your-name.workers.dev"
                     className="flex-1 bg-[#0b0e14] border border-white/15 focus:border-emerald-500 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none"
                   />
-                  <button type="submit" className="psbox-btn text-xs shrink-0">
-                    Connect Microsoft
+                  <button type="submit" className="psbox-btn psbox-btn-primary text-xs shrink-0">
+                    Connect &amp; Get Code
                   </button>
                 </form>
               </div>
@@ -411,11 +450,15 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
           </div>
         </div>
 
-        {/* Right: QR Card or Feature Summary */}
+        {/* Right: QR Card */}
         <div className="lg:col-span-5 flex flex-col items-center gap-4">
-          {dc?.qrDataUrl ? (
+          {(dc?.qrDataUrl || defaultQr) ? (
             <div className="bg-white rounded-3xl p-5 shadow-2xl text-center max-w-[290px] w-full">
-              <img src={dc.qrDataUrl} alt="Microsoft Link QR Code" className="w-full h-auto rounded-xl" />
+              <img
+                src={dc?.qrDataUrl || defaultQr}
+                alt="Microsoft Link QR Code"
+                className="w-full h-auto rounded-xl"
+              />
               <p className="text-xs font-semibold text-slate-700 mt-3 leading-snug">
                 {t(lang, 'signInScan')}
               </p>
