@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { ExternalLink, Eye, EyeOff, Heart, Lock, Play, ShoppingBag, Sliders, Star, X } from 'lucide-react';
-import { makePosterFallbackUri } from '../data/demoCatalog';
-import { getProductAchievements } from '../data/psboxDefaults';
+import { makePosterFallbackUri } from '../utils/posterFallback';
+import { psboxApi } from '../services/psboxApi';
 import { t, type LangCode } from '../i18n/translations';
-import type { AppSettings, CatalogProduct, GlyphStyle, PerGameProfile } from '../types';
+import type { AchievementItem, AppSettings, CatalogProduct, GlyphStyle, PerGameProfile } from '../types';
 import { AchievementsModal } from './AchievementsModal';
 import { GamerscoreBadge } from './BrandMark';
 import { PerGameSettingsModal } from './PerGameSettingsModal';
@@ -63,13 +63,26 @@ export const GameDetailsModal: React.FC<GameDetailsModalProps> = ({
   const storeUrl = `https://www.xbox.com/games/store/p/${product.productId}`;
   const [storeQr, setStoreQr] = useState('');
   const [achOpen, setAchOpen] = useState(false);
+  const [achItems, setAchItems] = useState<AchievementItem[]>([]);
   const [gameSettingsOpen, setGameSettingsOpen] = useState(false);
   const showBuyQr = !product.playable && product.purchasable && !product.isFreeToPlay;
-  const achItems = getProductAchievements(product);
   const achUnlocked = achItems.filter((a) => a.unlocked).length;
   const achGs = achItems.filter((a) => a.unlocked).reduce((s, a) => s + a.gamerscore, 0);
   const achTotalGs = achItems.reduce((s, a) => s + a.gamerscore, 0);
   const hasCustomProfile = Boolean(settings.perGameSettings[product.productId]);
+
+  useEffect(() => {
+    let active = true;
+    psboxApi
+      .getAchievements(product.xboxTitleId)
+      .then((res) => {
+        if (active) setAchItems(res);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [product.xboxTitleId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -277,7 +290,9 @@ export const GameDetailsModal: React.FC<GameDetailsModalProps> = ({
             >
               <GamerscoreBadge size={16} />
               <span>
-                {achUnlocked}/{achItems.length} ({achGs}/{achTotalGs} G)
+                {achItems.length > 0
+                  ? `${achUnlocked}/${achItems.length} (${achGs}/${achTotalGs} G)`
+                  : 'Achievements'}
               </span>
             </button>
 

@@ -19,7 +19,6 @@ export interface UserProfile {
 
 export interface StoredSession {
   id: string;
-  demoMode: boolean;
   msaTokens?: MsaTokens;
   xblUser?: XblToken;
   xblProfileXsts?: XblToken;
@@ -97,7 +96,6 @@ export function getOrCreateSession(id?: string): StoredSession {
   const newId = id || randomBytes(16).toString('hex');
   const s: StoredSession = {
     id: newId,
-    demoMode: false,
     loginCountry: '',
     activeResolution: '1080p',
     createdAt: Date.now(),

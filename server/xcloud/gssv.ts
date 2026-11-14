@@ -17,7 +17,7 @@ export interface GssvSessionLogin {
   expiresAt: number;
   regions: RegionInfo[];
   selectedRegion: RegionInfo;
-  offering: 'xgpuweb' | 'xhome';
+  offering: 'xgpuweb' | 'xgpuwebf2p' | 'xhome';
 }
 
 export interface CloudTitle {
@@ -155,7 +155,7 @@ function authedHeaders(gsToken: string, resolution: ResolutionMode, hasBody = fa
 
 export async function gssvLogin(
   gssvXstsToken: string,
-  offering: 'xgpuweb' | 'xhome' = 'xgpuweb',
+  offering: 'xgpuweb' | 'xgpuwebf2p' | 'xhome' = 'xgpuweb',
   loginCountry = '',
 ): Promise<GssvSessionLogin> {
   const headers: Record<string, string> = {
@@ -242,9 +242,20 @@ export async function listGssvTitles(
       const supportedInputs = Array.isArray(details.supportedInputTypes)
         ? (details.supportedInputTypes as string[])
         : [];
+      const altIds = Array.isArray(details.alternateProductIds)
+        ? (details.alternateProductIds as string[])
+        : [];
+      const productId = String(details.productId || altIds[0] || '');
+      const titleId = String(item.titleId ?? '');
+      if (
+        !titleId ||
+        /ARTBOOK|SOUNDTRACK|DIGITALSTORYART|INSTALLPACK|DIGITALEXTRAS|BONUSCONTENT/i.test(titleId)
+      ) {
+        continue;
+      }
       out.push({
-        titleId: String(item.titleId ?? ''),
-        productId: String(details.productId ?? ''),
+        titleId,
+        productId,
         xboxTitleId: String(details.xboxTitleId ?? ''),
         name: '',
         imageUrl: '',

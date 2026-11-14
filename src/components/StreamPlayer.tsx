@@ -42,7 +42,6 @@ interface StreamPlayerProps {
   heroUrl?: string;
   targetId: string;
   isHome: boolean;
-  demoMode: boolean;
   regionName: string;
   cloudTimeRemainingSec?: number;
   settings: AppSettings;
@@ -155,7 +154,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   heroUrl,
   targetId,
   isHome,
-  demoMode,
   regionName,
   cloudTimeRemainingSec = -1,
   settings,
@@ -164,11 +162,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const demoCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const clientRef = useRef<XCloudWebRtcClient | null>(null);
   const startTimeRef = useRef(Date.now());
 
-  const [statusMsg, setStatusMsg] = useState(demoMode ? 'Launching demo cloud stream...' : 'Starting session...');
+  const [statusMsg, setStatusMsg] = useState('Starting Xbox Cloud Gaming session...');
   const [connected, setConnected] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -197,26 +194,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [nexusToast, setNexusToast] = useState(false);
 
   const [telemetry, setTelemetry] = useState<StreamTelemetry>({
-    rttMs: demoMode ? 18 : 0,
-    bitrateMbps: demoMode ? 16.4 : 0,
-    fps: demoMode ? 60 : 0,
+    rttMs: 0,
+    bitrateMbps: 0,
+    fps: 0,
     packetLossPct: 0,
     width: settings.resolution === '720p' ? 1280 : settings.resolution === '1440p' ? 2560 : 1920,
     height: settings.resolution === '720p' ? 720 : settings.resolution === '1440p' ? 1440 : 1080,
     codec: 'H.264 High',
-  });
-
-  const demoInputRef = useRef({
-    stickX: 0,
-    stickY: 0,
-    up: false,
-    down: false,
-    left: false,
-    right: false,
-    a: false,
-    b: false,
-    x: false,
-    y: false,
   });
 
   // Rotate PSBox tips every 7 seconds while launching
@@ -249,19 +233,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     startTimeRef.current = Date.now();
     setConnected(false);
     setStreamError(null);
-    if (demoMode) {
-      const timer = window.setTimeout(() => {
-        setConnected(true);
-        if (settings.queueReadyAlert) playQueueReadyChime();
-      }, 950);
-      return () => clearTimeout(timer);
-    }
 
     const client = new XCloudWebRtcClient({
       onStatus: (msg) => setStatusMsg(msg),
       onMediaStream: (stream) => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+          videoRef.current.volume = Math.max(0, Math.min(1, settings.gameVolume / 100));
           videoRef.current.play().catch(() => {});
         }
         setConnected(true);
@@ -290,216 +268,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       client.stop();
       clientRef.current = null;
     };
-  }, [demoMode, targetId, isHome, reloadNonce]);
+  }, [targetId, isHome, reloadNonce]);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.volume = Math.max(0, Math.min(1, settings.gameVolume / 100));
+    }
+  }, [settings.gameVolume]);
 
   useEffect(() => {
     clientRef.current?.setDeadzone(settings.deadzone);
     clientRef.current?.setTriggerRumble(settings.triggerRumble);
   }, [settings.deadzone, settings.triggerRumble]);
-
-  // Interactive 60fps Demo Arcade Stream Canvas
-  useEffect(() => {
-    if (!demoMode || !connected) return;
-    const canvas = demoCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    let raf = 0;
-    let px = 640;
-    let py = 460;
-    let vx = 0;
-    let vy = 0;
-    let frame = 0;
-    let score = 0;
-    let fireCooldown = 0;
-    const stars = Array.from({ length: 60 }, () => ({
-      x: Math.random() * 1280,
-      y: Math.random() * 340,
-      s: Math.random() * 2 + 0.6,
-    }));
-    const rings = Array.from({ length: 4 }, (_, i) => ({
-      x: 240 + Math.random() * 800,
-      y: 220 + Math.random() * 260,
-      z: i * 0.25 + 0.2,
-    }));
-    const bolts: Array<{ x: number; y: number; vy: number }> = [];
-    const particles: Array<{ x: number; y: number; vx: number; vy: number; life: number; color: string }> = [];
-
-    const tick = () => {
-      frame++;
-      if (fireCooldown > 0) fireCooldown--;
-      const pads = navigator.getGamepads?.() ?? [];
-      const pad = pads[0];
-      const inp = demoInputRef.current;
-
-      let ax = inp.stickX || (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
-      let ay = -inp.stickY || (inp.down ? 1 : 0) - (inp.up ? 1 : 0);
-      let btnA = inp.a;
-      let btnX = inp.x;
-
-      if (pad) {
-        if (Math.abs(pad.axes[0] ?? 0) > settings.deadzone) ax = pad.axes[0];
-        if (Math.abs(pad.axes[1] ?? 0) > settings.deadzone) ay = pad.axes[1];
-        if (pad.buttons[0]?.pressed) btnA = true;
-        if (pad.buttons[2]?.pressed) btnX = true;
-      }
-
-      const speed = btnA ? 9.2 : 5.4;
-      vx = vx * 0.8 + ax * speed * 0.35;
-      vy = vy * 0.8 + ay * speed * 0.35;
-      px = Math.max(80, Math.min(1200, px + vx));
-      py = Math.max(140, Math.min(620, py + vy));
-
-      if (btnX && fireCooldown === 0) {
-        bolts.push({ x: px, y: py - 24, vy: -14 });
-        fireCooldown = 8;
-      }
-
-      if (btnA || frame % 3 === 0) {
-        particles.push({
-          x: px,
-          y: py + 12,
-          vx: (Math.random() - 0.5) * 2.6 - vx * 0.3,
-          vy: 2 + Math.random() * 2,
-          life: 1,
-          color: btnA ? '#4ade80' : '#107c10',
-        });
-      }
-
-      // Sky gradient
-      const grad = ctx.createLinearGradient(0, 0, 0, 720);
-      grad.addColorStop(0, '#050c09');
-      grad.addColorStop(0.45, '#0b2217');
-      grad.addColorStop(1, '#05070a');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, 1280, 720);
-
-      // Stars
-      ctx.fillStyle = 'rgba(255,255,255,0.65)';
-      for (const st of stars) {
-        ctx.fillRect(st.x, st.y, st.s, st.s);
-      }
-
-      // Horizon cyber grid
-      ctx.strokeStyle = 'rgba(34, 197, 94, 0.2)';
-      ctx.lineWidth = 1;
-      for (let gx = -600; gx <= 1880; gx += 80) {
-        ctx.beginPath();
-        ctx.moveTo(640 + (gx - 640) * 0.16, 260);
-        ctx.lineTo(gx, 720);
-        ctx.stroke();
-      }
-      for (let i = 0; i < 12; i++) {
-        const tVal = (i + ((frame * (btnA ? 0.065 : 0.032)) % 1)) / 12;
-        const yLine = 260 + tVal * tVal * 460;
-        ctx.beginPath();
-        ctx.moveTo(0, yLine);
-        ctx.lineTo(1280, yLine);
-        ctx.stroke();
-      }
-
-      // Energy Rings (Fly through for points!)
-      for (const ring of rings) {
-        ring.z += btnA ? 0.015 : 0.008;
-        if (ring.z > 1.15) {
-          if (Math.hypot(px - ring.x, py - ring.y) < 75) {
-            score += 100;
-            for (let k = 0; k < 14; k++) {
-              particles.push({
-                x: ring.x,
-                y: ring.y,
-                vx: (Math.random() - 0.5) * 8,
-                vy: (Math.random() - 0.5) * 8,
-                life: 1,
-                color: '#38bdf8',
-              });
-            }
-          }
-          ring.z = 0.05;
-          ring.x = 200 + Math.random() * 880;
-          ring.y = 180 + Math.random() * 340;
-        }
-        const radius = 16 + ring.z * 58;
-        ctx.strokeStyle = `rgba(56, 189, 248, ${Math.min(1, ring.z * 0.9)})`;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(ring.x, ring.y, radius, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-
-      // Plasma bolts
-      ctx.fillStyle = '#38bdf8';
-      for (let i = bolts.length - 1; i >= 0; i--) {
-        bolts[i].y += bolts[i].vy;
-        ctx.fillRect(bolts[i].x - 2.5, bolts[i].y, 5, 16);
-        if (bolts[i].y < 0) bolts.splice(i, 1);
-      }
-
-      // Particles
-      for (let i = particles.length - 1; i >= 0; i--) {
-        const pt = particles[i];
-        pt.x += pt.vx;
-        pt.y += pt.vy;
-        pt.life -= 0.035;
-        if (pt.life <= 0) {
-          particles.splice(i, 1);
-          continue;
-        }
-        ctx.globalAlpha = pt.life;
-        ctx.fillStyle = pt.color;
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 4 * pt.life + 1, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-
-      // Craft
-      ctx.save();
-      ctx.translate(px, py);
-      ctx.rotate(vx * 0.045);
-      ctx.shadowColor = btnA ? '#4ade80' : '#22c55e';
-      ctx.shadowBlur = btnA ? 30 : 16;
-      ctx.fillStyle = '#f8fafc';
-      ctx.beginPath();
-      ctx.moveTo(0, -28);
-      ctx.lineTo(26, 20);
-      ctx.lineTo(0, 11);
-      ctx.lineTo(-26, 20);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-
-      // HUD Card
-      ctx.fillStyle = 'rgba(10, 14, 18, 0.78)';
-      ctx.fillRect(28, 86, 370, 68);
-      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-      ctx.strokeRect(28, 86, 370, 68);
-      ctx.fillStyle = '#4ade80';
-      ctx.font = 'bold 11px Inter, sans-serif';
-      ctx.fillText(`DEMO CLOUD STREAM • SCORE: ${score}`, 44, 110);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 18px Inter, sans-serif';
-      ctx.fillText(title, 44, 136);
-
-      if (frame % 30 === 0) {
-        setTelemetry({
-          rttMs: Math.round(15 + Math.random() * 5),
-          bitrateMbps: Number((15.4 + Math.random() * 2.2).toFixed(1)),
-          fps: 60,
-          packetLossPct: 0,
-          width: settings.resolution === '720p' ? 1280 : settings.resolution === '1440p' ? 2560 : 1920,
-          height: settings.resolution === '720p' ? 720 : settings.resolution === '1440p' ? 1440 : 1080,
-          codec: 'H.264 High (Simulated)',
-        });
-        setFrametimes((prev) => [...prev.slice(-39), Math.round(6 + Math.random() * 4)]);
-      }
-
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [demoMode, connected, title, settings.resolution, settings.deadzone]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -516,12 +296,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         return;
       }
       if (kbReq) return;
-      if (e.code === 'ArrowUp' || e.code === 'KeyW') demoInputRef.current.up = true;
-      if (e.code === 'ArrowDown' || e.code === 'KeyS') demoInputRef.current.down = true;
-      if (e.code === 'ArrowLeft' || e.code === 'KeyA') demoInputRef.current.left = true;
-      if (e.code === 'ArrowRight' || e.code === 'KeyD') demoInputRef.current.right = true;
-      if (e.code === 'Space' || e.code === 'Enter') demoInputRef.current.a = true;
-      if (e.code === 'KeyE') demoInputRef.current.x = true;
 
       const mapped = VK_MAP[e.code];
       if (mapped?.bit) clientRef.current?.setKeyboardGamepadBit(mapped.bit, true);
@@ -529,13 +303,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'ArrowUp' || e.code === 'KeyW') demoInputRef.current.up = false;
-      if (e.code === 'ArrowDown' || e.code === 'KeyS') demoInputRef.current.down = false;
-      if (e.code === 'ArrowLeft' || e.code === 'KeyA') demoInputRef.current.left = false;
-      if (e.code === 'ArrowRight' || e.code === 'KeyD') demoInputRef.current.right = false;
-      if (e.code === 'Space' || e.code === 'Enter') demoInputRef.current.a = false;
-      if (e.code === 'KeyE') demoInputRef.current.x = false;
-
       const mapped = VK_MAP[e.code];
       if (mapped?.bit) clientRef.current?.setKeyboardGamepadBit(mapped.bit, false);
       if (mouseCapture) clientRef.current?.sendRawKey(e.keyCode, false);
@@ -588,19 +355,16 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           ? 'stream-sharp-high'
           : '';
 
-  const bindVirtualBtn = (bit: number, demoKey?: 'a' | 'b' | 'x' | 'y') => ({
+  const bindVirtualBtn = (bit: number) => ({
     onPointerDown: () => {
       navigator.vibrate?.(12);
       clientRef.current?.setVirtualButton(bit, true);
-      if (demoKey) demoInputRef.current[demoKey] = true;
     },
     onPointerUp: () => {
       clientRef.current?.setVirtualButton(bit, false);
-      if (demoKey) demoInputRef.current[demoKey] = false;
     },
     onPointerLeave: () => {
       clientRef.current?.setVirtualButton(bit, false);
-      if (demoKey) demoInputRef.current[demoKey] = false;
     },
   });
 
@@ -614,22 +378,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }}
       className="fixed inset-0 z-50 bg-black flex items-center justify-center overflow-hidden select-none"
     >
-      {demoMode ? (
-        <canvas
-          ref={demoCanvasRef}
-          width={1280}
-          height={720}
-          className={`w-full h-full object-contain ${sharpClass}`}
-        />
-      ) : (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted={muted}
-          className={`w-full h-full object-contain ${sharpClass}`}
-        />
-      )}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={muted}
+        className={`w-full h-full object-contain ${sharpClass}`}
+      />
 
       {(!connected || streamError) && (
         <div className="absolute inset-0 flex flex-col items-center justify-between p-6 sm:p-12 text-center bg-[#0e0e0e] z-20">
@@ -813,8 +568,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 label="LS"
                 onMove={(x, y) => {
                   clientRef.current?.setVirtualStick('left', x, y);
-                  demoInputRef.current.stickX = x;
-                  demoInputRef.current.stickY = y;
                 }}
               />
             </div>
@@ -861,7 +614,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 <div />
                 <button
                   type="button"
-                  {...bindVirtualBtn(GamepadButton.Y, 'y')}
+                  {...bindVirtualBtn(GamepadButton.Y)}
                   className="w-11 h-11 rounded-full bg-amber-500/30 border border-amber-400/60 active:bg-amber-400 text-white font-bold"
                 >
                   Y
@@ -869,7 +622,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 <div />
                 <button
                   type="button"
-                  {...bindVirtualBtn(GamepadButton.X, 'x')}
+                  {...bindVirtualBtn(GamepadButton.X)}
                   className="w-11 h-11 rounded-full bg-sky-500/30 border border-sky-400/60 active:bg-sky-400 text-white font-bold"
                 >
                   X
@@ -877,7 +630,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 <div />
                 <button
                   type="button"
-                  {...bindVirtualBtn(GamepadButton.B, 'b')}
+                  {...bindVirtualBtn(GamepadButton.B)}
                   className="w-11 h-11 rounded-full bg-rose-500/30 border border-rose-400/60 active:bg-rose-400 text-white font-bold"
                 >
                   B
@@ -885,7 +638,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 <div />
                 <button
                   type="button"
-                  {...bindVirtualBtn(GamepadButton.A, 'a')}
+                  {...bindVirtualBtn(GamepadButton.A)}
                   className="w-11 h-11 rounded-full bg-emerald-500/30 border border-emerald-400/60 active:bg-emerald-400 text-white font-bold"
                 >
                   A

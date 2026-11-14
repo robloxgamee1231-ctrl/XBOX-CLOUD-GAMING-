@@ -9,6 +9,7 @@
     "build": "vite build && tsc --noEmit -p tsconfig.server.json",
     "build:pages": "vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
+    "test": "tsx --test tests/xcloud.test.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json"
   },
   "dependencies": {

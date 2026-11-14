@@ -123,7 +123,6 @@ export interface HomeConsole {
 }
 
 export interface LibraryData {
-  demoMode: boolean;
   recentIds: string[];
   popularIds: string[];
   recentlyAddedIds: string[];

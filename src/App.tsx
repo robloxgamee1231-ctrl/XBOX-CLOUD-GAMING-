@@ -80,7 +80,6 @@ export function App() {
   const [settings, setSettings] = useState<AppSettings>(loadStoredSettings);
   const [booting, setBooting] = useState(true);
   const [signedIn, setSignedIn] = useState(false);
-  const [demoMode, setDemoMode] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [regions, setRegions] = useState<RegionInfo[]>([]);
   const [selectedRegion, setSelectedRegion] = useState('');
@@ -177,7 +176,6 @@ export function App() {
       .then((d) => {
         if (d.signedIn && d.profile) {
           setSignedIn(true);
-          setDemoMode(Boolean(d.demoMode));
           setProfile(d.profile);
           setRegions(d.regions ?? []);
           setSelectedRegion(d.selectedRegion ?? '');
@@ -228,7 +226,6 @@ export function App() {
   const handleSignOut = async () => {
     await psboxApi.signOut().catch(() => {});
     setSignedIn(false);
-    setDemoMode(false);
     setProfile(null);
     setLibrary(null);
     setConsoles([]);
@@ -422,8 +419,7 @@ export function App() {
         lang={settings.language}
         loginCountry={settings.loginCountry}
         onChangeCountry={(country) => updateSettings({ loginCountry: country })}
-        onSignedIn={({ demoMode: dm, profile: prof, regions: regs, selectedRegion: sel }) => {
-          setDemoMode(dm);
+        onSignedIn={({ profile: prof, regions: regs, selectedRegion: sel }) => {
           setProfile(prof);
           setRegions(regs);
           setSelectedRegion(sel);
@@ -500,11 +496,6 @@ export function App() {
                 <span className="font-semibold text-[15px] tracking-tight text-white truncate">
                   {t(settings.language, 'cloudGaming')}
                 </span>
-                {demoMode && (
-                  <span className="px-2 py-0.5 rounded bg-[#242424] border border-white/20 text-[#bebebe] text-[10px] font-bold uppercase tracking-wider shrink-0">
-                    Demo
-                  </span>
-                )}
               </div>
               {profile.playtimeUnlimited ? (
                 <div className="flex items-center gap-1.5 text-[11px] text-[#bebebe]">
@@ -664,7 +655,7 @@ export function App() {
               type="button"
               onClick={handleSignOut}
               className="p-2 rounded-full bg-[#242424]/85 hover:bg-rose-500/20 text-[#bebebe] hover:text-rose-200 transition-colors cursor-pointer"
-              title={demoMode ? 'Sign in with Microsoft / Switch Account' : t(settings.language, 'signOut')}
+              title={t(settings.language, 'signOut')}
             >
               <LogOut className="w-4 h-4" />
             </button>
@@ -1546,15 +1537,6 @@ export function App() {
                   <Link2 className="w-4 h-4 text-[#107c10]" />
                   Microsoft Account Relay (GitHub Pages)
                 </div>
-                {demoMode && (
-                  <button
-                    type="button"
-                    onClick={handleSignOut}
-                    className="psbox-btn psbox-btn-primary text-xs"
-                  >
-                    Switch to Microsoft Sign-In
-                  </button>
-                )}
               </div>
               <p className="text-xs text-[#bebebe] leading-relaxed">
                 Configure your Cloudflare Worker CORS Relay URL (from <code>cloudflare-worker/worker.js</code>) to
@@ -1687,7 +1669,6 @@ export function App() {
       {/* Diagnostics & Controller Studio Modals */}
       {signInCheckOpen && profile && (
         <SignInCheckModal
-          demoMode={demoMode}
           gamertag={profile.gamertag}
           subscription={profile.subscription || 'FREE'}
           previewFeatures={settings.previewFeatures}
@@ -1712,7 +1693,6 @@ export function App() {
           heroUrl={activeStream.heroUrl}
           targetId={activeStream.targetId}
           isHome={activeStream.isHome}
-          demoMode={demoMode}
           regionName={selectedRegion}
           cloudTimeRemainingSec={profile?.playtimeRemainingSec ?? -1}
           settings={settings}

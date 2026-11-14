@@ -1,7 +1,8 @@
 import QRCode from 'qrcode';
-import { DEMO_CONSOLES, DEMO_PROFILE, getDemoLibrary } from '../data/demoCatalog';
 import type {
+  AchievementItem,
   CatalogProduct,
+  FriendPresence,
   HomeConsole,
   LibraryData,
   RegionInfo,
@@ -25,15 +26,23 @@ const COUNTRY_IPS: Record<string, string> = {
   us: '143.244.47.65',
 };
 
+interface GssvLoginState {
+  gsToken: string;
+  market: string;
+  regions: RegionInfo[];
+  selectedRegion: RegionInfo;
+  expiresAt: number;
+  offering: 'xgpuweb' | 'xgpuwebf2p' | 'xhome';
+}
+
 interface StaticAuthState {
-  demoMode: boolean;
   refreshToken?: string;
   accessToken?: string;
   msaExpiresAt?: number;
   xblUser?: { token: string; userHash: string; gamertag: string; xuid: string };
   xblProfile?: { token: string; userHash: string };
-  gssvCloud?: { gsToken: string; market: string; regions: RegionInfo[]; selectedRegion: RegionInfo; expiresAt: number };
-  gssvHome?: { gsToken: string; market: string; regions: RegionInfo[]; selectedRegion: RegionInfo; expiresAt: number };
+  gssvCloud?: GssvLoginState;
+  gssvHome?: GssvLoginState;
   profile?: UserProfile;
   loginCountry: string;
   activeSessionPath?: string;
@@ -101,15 +110,19 @@ export function isStaticHostingMode(): boolean {
 
 async function relayFetch(targetUrl: string, init: RequestInit = {}, country = ''): Promise<Response> {
   const relay = getRelayUrl();
-  if (!relay) {
+  if (relay) {
+    const headers = new Headers(init.headers);
+    if (country && COUNTRY_IPS[country]) {
+      headers.set('X-PSBox-Country', COUNTRY_IPS[country]);
+    }
+    const proxiedUrl = `${relay}/?url=${encodeURIComponent(targetUrl)}`;
+    return fetch(proxiedUrl, { ...init, headers });
+  }
+  try {
+    return await fetch(targetUrl, init);
+  } catch {
     throw new Error('NO_RELAY');
   }
-  const headers = new Headers(init.headers);
-  if (country && COUNTRY_IPS[country]) {
-    headers.set('X-PSBox-Country', COUNTRY_IPS[country]);
-  }
-  const proxiedUrl = `${relay}/?url=${encodeURIComponent(targetUrl)}`;
-  return fetch(proxiedUrl, { ...init, headers });
 }
 
 function buildDeviceInfo(resolution: ResolutionMode): string {
@@ -130,6 +143,26 @@ function buildDeviceInfo(resolution: ResolutionMode): string {
         browser: { browserName: 'edge', browserVersion: '141.0.0.0' },
         hw: { make: 'Microsoft', model: 'Windows', platformType: 'desktop', sdkType: 'web' },
         os: { name: 'windows', ver: '10.0', platform: 'desktop' },
+      },
+    });
+  }
+  if (resolution === '1080pHQ') {
+    return JSON.stringify({
+      appInfo: {
+        env: {
+          clientAppId: 'play.xbox.com',
+          clientAppType: 'browser',
+          clientAppVersion: '26.1.97',
+          clientSdkVersion: '10.3.7',
+          httpEnvironment: 'prod',
+          sdkInstallId: '',
+        },
+      },
+      dev: {
+        os: { name: 'tizen', ver: '22631.2715', platform: 'desktop' },
+        hw: { make: 'Microsoft', model: 'unknown', sdktype: 'web' },
+        browser: { browserName: 'chrome', browserVersion: '140.0.3485.54' },
+        displayInfo: { dimensions: { widthInPixels: 4096, heightInPixels: 2160 }, pixelDensity: { dpiX: 1, dpiY: 1 } },
       },
     });
   }
@@ -208,7 +241,7 @@ async function xblAuthFlow(accessToken: string, refreshToken: string, loginCount
   const profileXsts = await getXsts('http://xboxlive.com').catch(() => userToken);
   const gssvXsts = await getXsts('http://gssv.xboxlive.com/');
 
-  const gssvLoginReq = async (offering: 'xgpuweb' | 'xhome') => {
+  const gssvLoginReq = async (offering: 'xgpuweb' | 'xgpuwebf2p' | 'xhome'): Promise<GssvLoginState> => {
     const r = await relayFetch(
       `https://${offering}.gssv-play-prod.xboxlive.com/v2/login/user`,
       {
@@ -233,10 +266,14 @@ async function xblAuthFlow(accessToken: string, refreshToken: string, loginCount
       regions,
       selectedRegion,
       expiresAt: Math.floor(Date.now() / 1000) + (j.durationInSeconds || 3600),
+      offering,
     };
   };
 
-  const gssvCloud = await gssvLoginReq('xgpuweb').catch(() => undefined);
+  let gssvCloud = await gssvLoginReq('xgpuweb').catch(() => undefined);
+  if (!gssvCloud) {
+    gssvCloud = await gssvLoginReq('xgpuwebf2p').catch(() => undefined);
+  }
   const gssvHome = await gssvLoginReq('xhome').catch(() => undefined);
   if (!gssvCloud && !gssvHome) {
     throw new Error('Could not log into xCloud or Xbox Remote Play. Check subscription or Country Bypass.');
@@ -270,7 +307,6 @@ async function xblAuthFlow(accessToken: string, refreshToken: string, loginCount
   }
 
   return {
-    demoMode: false,
     refreshToken,
     accessToken,
     msaExpiresAt: Math.floor(Date.now() / 1000) + 3600,
@@ -283,7 +319,12 @@ async function xblAuthFlow(accessToken: string, refreshToken: string, loginCount
       xuid: profileXsts.xuid,
       gamerpicUrl,
       gamerscore,
-      subscription: gssvCloud ? 'GamePass' : '',
+      subscription:
+        gssvCloud?.offering === 'xgpuwebf2p'
+          ? 'Free (Cloud F2P)'
+          : gssvCloud
+            ? 'Game Pass Ultimate'
+            : 'Remote Play',
       playtimeRemainingSec: -1,
       playtimeMaxSec: -1,
       playtimeUnlimited: false,
@@ -293,10 +334,49 @@ async function xblAuthFlow(accessToken: string, refreshToken: string, loginCount
   };
 }
 
+async function ensureStaticSessionFresh(st: StaticAuthState): Promise<StaticAuthState> {
+  const now = Math.floor(Date.now() / 1000);
+  const expired =
+    !st.gssvCloud ||
+    st.gssvCloud.expiresAt - now < 180 ||
+    !st.msaExpiresAt ||
+    st.msaExpiresAt - now < 180;
+  if (!expired || !st.refreshToken) return st;
+
+  const res = await relayFetch('https://login.live.com/oauth20_token.srf', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: MSA_CLIENT_ID,
+      grant_type: 'refresh_token',
+      refresh_token: st.refreshToken,
+      scope: MSA_SCOPE,
+    }).toString(),
+  });
+  const j = (await res.json()) as { access_token?: string; refresh_token?: string };
+  if (!res.ok || !j.access_token) return st;
+  const refreshed = await xblAuthFlow(j.access_token, j.refresh_token || st.refreshToken, st.loginCountry);
+  refreshed.activeResolution = st.activeResolution;
+  saveStaticState(refreshed);
+  return refreshed;
+}
+
+function fixImgUrl(u: unknown): string {
+  const s = typeof u === 'string' ? u : '';
+  return s.startsWith('//') ? `https:${s}` : s;
+}
+
+function parsePlan(passMeta: Record<string, unknown> | undefined, isF2p: boolean): 0 | 1 | 2 | 3 {
+  if (isF2p) return 0;
+  if (!passMeta) return 3;
+  if ('CFQ7TTC0K5DJ' in passMeta) return 1;
+  if ('CFQ7TTC0P85B' in passMeta) return 2;
+  return 3;
+}
+
 export const psboxApi = {
   async getSession(): Promise<{
     signedIn: boolean;
-    demoMode: boolean;
     staticHosting: boolean;
     profile?: UserProfile;
     regions?: RegionInfo[];
@@ -309,24 +389,16 @@ export const psboxApi = {
     }
 
     const st = loadStaticState();
-    if (!st) return { signedIn: false, demoMode: false, staticHosting: true };
-    if (st.demoMode) {
-      return {
-        signedIn: true,
-        demoMode: true,
-        staticHosting: true,
-        profile: DEMO_PROFILE,
-        regions: getDemoLibrary().regions,
-        selectedRegion: 'EASTUS',
-      };
+    if (!st || !st.profile) {
+      return { signedIn: false, staticHosting: true };
     }
+    const fresh = await ensureStaticSessionFresh(st).catch(() => st);
     return {
-      signedIn: Boolean(st.profile),
-      demoMode: false,
+      signedIn: Boolean(fresh.profile),
       staticHosting: true,
-      profile: st.profile,
-      regions: st.gssvCloud?.regions ?? st.gssvHome?.regions ?? [],
-      selectedRegion: st.gssvCloud?.selectedRegion.name ?? st.gssvHome?.selectedRegion.name ?? '',
+      profile: fresh.profile,
+      regions: fresh.gssvCloud?.regions ?? fresh.gssvHome?.regions ?? [],
+      selectedRegion: fresh.gssvCloud?.selectedRegion.name ?? fresh.gssvHome?.selectedRegion.name ?? '',
     };
   },
 
@@ -341,6 +413,13 @@ export const psboxApi = {
     networkBlocked?: boolean;
     error?: string;
   }> {
+    const defaultUri = 'https://www.microsoft.com/link';
+    const defaultQr = await QRCode.toDataURL(defaultUri, {
+      margin: 2,
+      width: 280,
+      color: { dark: '#0b0e14', light: '#ffffff' },
+    }).catch(() => '');
+
     if (await detectLocalBackend()) {
       const res = await fetch('./api/auth/device-code', { method: 'POST' });
       const data = await res.json();
@@ -348,10 +427,10 @@ export const psboxApi = {
         return {
           userCode: '',
           deviceCode: '',
-          verificationUri: '',
+          verificationUri: defaultUri,
           intervalSec: 5,
           expiresInSec: 900,
-          qrDataUrl: '',
+          qrDataUrl: defaultQr,
           networkBlocked: Boolean(data.networkBlocked),
           error: data.error,
         };
@@ -359,46 +438,58 @@ export const psboxApi = {
       return data;
     }
 
-    if (!getRelayUrl()) {
+    try {
+      const res = await relayFetch('https://login.live.com/oauth20_connect.srf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: MSA_CLIENT_ID,
+          scope: MSA_SCOPE,
+          response_type: 'device_code',
+        }).toString(),
+      });
+      const j = (await res.json()) as Record<string, unknown>;
+      if (!res.ok || !j.user_code || !j.device_code) {
+        return {
+          userCode: '',
+          deviceCode: '',
+          verificationUri: defaultUri,
+          intervalSec: 5,
+          expiresInSec: 900,
+          qrDataUrl: defaultQr,
+          error: `Microsoft device code failed (HTTP ${res.status})`,
+        };
+      }
+      const verificationUri = String(j.verification_uri || defaultUri);
+      const qrDataUrl = await QRCode.toDataURL(verificationUri, {
+        margin: 2,
+        width: 280,
+        color: { dark: '#0b0e14', light: '#ffffff' },
+      });
+      return {
+        userCode: String(j.user_code),
+        deviceCode: String(j.device_code),
+        verificationUri,
+        intervalSec: Number(j.interval ?? 5),
+        expiresInSec: Number(j.expires_in ?? 900),
+        qrDataUrl,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const needsRelay = msg === 'NO_RELAY' && !getRelayUrl();
       return {
         userCode: '',
         deviceCode: '',
-        verificationUri: 'https://www.microsoft.com/link',
+        verificationUri: defaultUri,
         intervalSec: 5,
         expiresInSec: 900,
-        qrDataUrl: '',
-        needsRelay: true,
-        error: 'GitHub Pages static hosting needs a CORS relay URL to contact Microsoft login.live.com.',
+        qrDataUrl: defaultQr,
+        needsRelay,
+        error: needsRelay
+          ? 'Browser CORS blocked direct sign-in to login.live.com. Connect a Cloudflare Relay URL below or run PSBox locally (npm start) to get your live Microsoft sign-in code.'
+          : msg,
       };
     }
-
-    const res = await relayFetch('https://login.live.com/oauth20_connect.srf', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: MSA_CLIENT_ID,
-        scope: MSA_SCOPE,
-        response_type: 'device_code',
-      }).toString(),
-    });
-    const j = (await res.json()) as Record<string, unknown>;
-    if (!res.ok || !j.user_code || !j.device_code) {
-      throw new Error(`Device code failed (HTTP ${res.status})`);
-    }
-    const verificationUri = String(j.verification_uri || 'https://www.microsoft.com/link');
-    const qrDataUrl = await QRCode.toDataURL(verificationUri, {
-      margin: 2,
-      width: 280,
-      color: { dark: '#0b0e14', light: '#ffffff' },
-    });
-    return {
-      userCode: String(j.user_code),
-      deviceCode: String(j.device_code),
-      verificationUri,
-      intervalSec: Number(j.interval ?? 5),
-      expiresInSec: Number(j.expires_in ?? 900),
-      qrDataUrl,
-    };
   },
 
   async pollDeviceCode(deviceCode: string, loginCountry: string) {
@@ -439,21 +530,6 @@ export const psboxApi = {
     return { status: 'error', error: String(j.error_description || errCode || `HTTP ${res.status}`) };
   },
 
-  async enterDemoMode() {
-    if (await detectLocalBackend()) {
-      const res = await fetch('./api/auth/demo', { method: 'POST' });
-      return res.json();
-    }
-    saveStaticState({ demoMode: true, loginCountry: '', activeResolution: '1080p', profile: DEMO_PROFILE });
-    return {
-      signedIn: true,
-      demoMode: true,
-      profile: DEMO_PROFILE,
-      regions: getDemoLibrary().regions,
-      selectedRegion: 'EASTUS',
-    };
-  },
-
   async signOut() {
     if (await detectLocalBackend()) {
       await fetch('./api/auth/signout', { method: 'POST' }).catch(() => {});
@@ -488,179 +564,374 @@ export const psboxApi = {
       return data as LibraryData;
     }
 
-    const st = loadStaticState();
-    if (!st || st.demoMode || !st.gssvCloud) {
-      // Try live public Xbox Game Pass Cloud catalog if browser/relay allows it; otherwise use rich real-game snapshot
-      try {
-        const fetchPublic = (url: string, init?: RequestInit) =>
-          getRelayUrl() ? relayFetch(url, init) : fetch(url, { ...init, signal: AbortSignal.timeout(3500) });
-        const [popRes, addRes, ftpRes] = await Promise.all([
-          fetchPublic(`https://catalog.gamepass.com/sigls/v2?id=6a589fa0-d493-472b-8e20-3813699d7056&market=US&language=${encodeURIComponent(locale)}`),
-          fetchPublic(`https://catalog.gamepass.com/sigls/v2?id=06323672-b8c8-43cc-b0de-32d5a9834749&market=US&language=${encodeURIComponent(locale)}`),
-          fetchPublic(`https://catalog.gamepass.com/sigls/v2?id=d8f4afcd-882a-49e3-86b3-f61fa0172b75&market=US&language=${encodeURIComponent(locale)}`),
-        ]);
-        if (popRes.ok) {
-          const extractIds = async (r: Response) => {
-            if (!r.ok) return [] as string[];
-            const arr = (await r.json()) as Array<{ id?: string }>;
-            return Array.isArray(arr) ? arr.map((x) => x.id).filter((x): x is string => Boolean(x)) : [];
-          };
-          const [popularIds, recentlyAddedIds, freeToPlayIds] = await Promise.all([
-            extractIds(popRes),
-            extractIds(addRes),
-            extractIds(ftpRes),
-          ]);
-          const topIds = Array.from(new Set([...popularIds.slice(0, 35), ...recentlyAddedIds.slice(0, 20), ...freeToPlayIds.slice(0, 15)]));
-          const products: CatalogProduct[] = [];
-          const fix = (u: unknown) => {
-            const s = typeof u === 'string' ? u : '';
-            return s.startsWith('//') ? `https:${s}` : s;
-          };
-          for (let i = 0; i < Math.min(topIds.length, 60); i += 20) {
-            const chunk = topIds.slice(i, i + 20);
-            const pr = await fetchPublic(
-              `https://catalog.gamepass.com/v3/products?market=US&language=${encodeURIComponent(locale)}&hydration=RemoteHighSapphire0`,
-              { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ Products: chunk }) },
-            );
-            if (!pr.ok) continue;
-            const pj = (await pr.json()) as { Products?: Record<string, Record<string, unknown>> };
-            for (const [id, p] of Object.entries(pj.Products ?? {})) {
-              const rating = (p.ContentRating as Record<string, unknown> | undefined) ?? {};
-              products.push({
-                productId: id,
-                xcloudTitleId: String(p.XCloudTitleId || id),
-                xboxTitleId: String(p.XboxTitleId || ''),
-                title: String(p.ProductTitle || ''),
-                publisher: String(p.PublisherName || ''),
-                description: String(p.ProductDescription || ''),
-                tileUrl: fix((p.ImageTile as { URL?: string } | undefined)?.URL),
-                posterUrl: fix((p.ImagePoster as { URL?: string } | undefined)?.URL),
-                heroUrl: fix((p.ImageHero as { URL?: string } | undefined)?.URL),
-                categories: Array.isArray(p.Categories) ? (p.Categories as string[]) : [],
-                plan: freeToPlayIds.includes(id) ? 0 : 3,
-                ratingAge: String(rating.LongName ?? rating.RatingId ?? ''),
-                ratingSystem: String(rating.RatingSystem ?? ''),
-                isFreeToPlay: freeToPlayIds.includes(id),
-                playable: true,
-                platform: 'XSX',
-              });
-            }
-          }
-          if (products.length > 0) {
-            const fallback = getDemoLibrary();
-            return {
-              ...fallback,
-              recentIds: popularIds.slice(0, 6),
-              popularIds,
-              recentlyAddedIds,
-              freeToPlayIds,
-              products,
-            };
-          }
-        }
-      } catch {
-        // Browser CORS blocked direct catalog fetch; use embedded real Xbox Cloud Gaming catalog
-      }
-      return getDemoLibrary();
+    const rawSt = loadStaticState();
+    if (!rawSt) throw new Error('Not signed in');
+    const st = await ensureStaticSessionFresh(rawSt);
+    const login = st.gssvCloud;
+    if (!login) {
+      return {
+        recentIds: [],
+        popularIds: [],
+        recentlyAddedIds: [],
+        freeToPlayIds: [],
+        ownedIds: [],
+        products: [],
+        regions: st.gssvHome?.regions ?? [],
+      };
     }
 
-    const login = st.gssvCloud;
     const base = login.selectedRegion.baseUri;
     const headers = {
       Authorization: `Bearer ${login.gsToken}`,
       'x-gssv-client': 'XboxComBrowser',
       'X-MS-Device-Info': buildDeviceInfo(st.activeResolution),
     };
-    const [titlesRes, popRes, addRes, ftpRes] = await Promise.all([
+    const [titlesRes, mruRes, popRes, addRes, ftpRes, allRes, peopleRes] = await Promise.all([
       relayFetch(`${base}/v2/titles?mr=250`, { headers }),
+      relayFetch(`${base}/v2/titles/mru?mr=25`, { headers }).catch(() => null),
       relayFetch(
         `https://catalog.gamepass.com/sigls/v2?id=6a589fa0-d493-472b-8e20-3813699d7056&market=${login.market}&language=${encodeURIComponent(locale)}`,
-      ),
+      ).catch(() => null),
       relayFetch(
         `https://catalog.gamepass.com/sigls/v2?id=06323672-b8c8-43cc-b0de-32d5a9834749&market=${login.market}&language=${encodeURIComponent(locale)}`,
-      ),
+      ).catch(() => null),
       relayFetch(
         `https://catalog.gamepass.com/sigls/v2?id=d8f4afcd-882a-49e3-86b3-f61fa0172b75&market=${login.market}&language=${encodeURIComponent(locale)}`,
-      ),
+      ).catch(() => null),
+      relayFetch(
+        `https://catalog.gamepass.com/sigls/v2?id=af206485-e87d-4624-9007-cb7f6d0cc42e&market=${login.market}&language=${encodeURIComponent(locale)}`,
+      ).catch(() => null),
+      st.xblProfile
+        ? relayFetch(
+            'https://peoplehub.xboxlive.com/users/me/people/social/decoration/detail,presencedetail,preferredcolor',
+            {
+              headers: {
+                Authorization: `XBL3.0 x=${st.xblProfile.userHash};${st.xblProfile.token}`,
+                'x-xbl-contract-version': '2',
+                'Accept-Language': locale,
+              },
+            },
+          ).catch(() => null)
+        : Promise.resolve(null),
     ]);
+
+    if (!titlesRes.ok) {
+      throw new Error(`Failed to fetch Xbox Cloud Gaming titles (HTTP ${titlesRes.status})`);
+    }
     const titlesJson = (await titlesRes.json()) as {
-      results?: Array<{ titleId?: string; details?: { productId?: string; supportsInGamePurchases?: boolean } }>;
+      results?: Array<{
+        titleId?: string;
+        details?: {
+          productId?: string;
+          alternateProductIds?: string[];
+          xboxTitleId?: string;
+          supportedInputTypes?: string[];
+          userPrograms?: string[];
+          hasEntitlement?: boolean;
+        };
+      }>;
     };
-    const parseSigl = async (r: Response) => {
-      if (!r.ok) return [] as string[];
+    const mruJson = mruRes?.ok
+      ? ((await mruRes.json()) as { results?: Array<{ titleId?: string; details?: { productId?: string } }> })
+      : { results: [] };
+
+    const parseSigl = async (r: Response | null) => {
+      if (!r || !r.ok) return [] as string[];
       const arr = (await r.json()) as Array<{ id?: string }>;
       return Array.isArray(arr) ? arr.map((x) => x.id).filter((x): x is string => Boolean(x)) : [];
     };
-    const [popIds, addIds, ftpIds] = await Promise.all([
+    const [popIds, addIds, ftpIds, allGpIds] = await Promise.all([
       parseSigl(popRes),
       parseSigl(addRes),
       parseSigl(ftpRes),
+      parseSigl(allRes),
     ]);
-    const gssvMap = new Map((titlesJson.results ?? []).map((t) => [t.details?.productId || '', t.titleId || '']));
+
+    const friends: FriendPresence[] = [];
+    if (peopleRes && peopleRes.ok) {
+      const pj = (await peopleRes.json()) as { people?: Array<Record<string, unknown>> };
+      for (const p of pj.people ?? []) {
+        const details = Array.isArray(p.presenceDetails)
+          ? (p.presenceDetails as Array<Record<string, unknown>>)
+          : [];
+        let titleId = '';
+        let device = '';
+        let isGame = false;
+        for (const d of details) {
+          const tid = d.TitleId !== undefined ? String(d.TitleId) : '';
+          if (!tid || tid === '750323071' || tid === '1022622766') continue;
+          if (Boolean(d.IsGame) || d.State === 'Active') {
+            titleId = tid;
+            device = String(d.Device ?? '');
+            isGame = Boolean(d.IsGame);
+            if (isGame) break;
+          }
+        }
+        if (titleId) {
+          friends.push({
+            xuid: String(p.xuid ?? ''),
+            gamertag: String(p.gamertag ?? ''),
+            gamerpicUrl: String(p.displayPicRaw ?? ''),
+            presenceState: String(p.presenceState ?? ''),
+            presenceText: String(p.presenceText ?? ''),
+            titleId,
+            device,
+            isGame,
+          });
+        }
+      }
+    }
+
+    const gssvByProduct = new Map<
+      string,
+      { titleId: string; xboxTitleId: string; mkb: boolean; touch: boolean }
+    >();
+    for (const item of titlesJson.results ?? []) {
+      const pid = item.details?.productId || item.details?.alternateProductIds?.[0] || '';
+      const tid = item.titleId || '';
+      if (
+        !pid ||
+        !tid ||
+        /ARTBOOK|SOUNDTRACK|DIGITALSTORYART|INSTALLPACK|DIGITALEXTRAS|BONUSCONTENT/i.test(tid)
+      ) {
+        continue;
+      }
+      const inputs = item.details?.supportedInputTypes ?? [];
+      gssvByProduct.set(pid, {
+        titleId: tid,
+        xboxTitleId: String(item.details?.xboxTitleId ?? ''),
+        mkb: inputs.some((x) => /mkb|mouse|keyboard/i.test(x)),
+        touch: inputs.some((x) => /touch/i.test(x)),
+      });
+    }
+
+    const recentIds = (mruJson.results ?? [])
+      .map((t) => t.details?.productId || '')
+      .filter(Boolean);
+
+    const f2pSet = new Set(ftpIds);
+    const gpSet = new Set(allGpIds);
+
     const batchIds = Array.from(
-      new Set([...popIds.slice(0, 45), ...addIds.slice(0, 25), ...ftpIds.slice(0, 20), ...Array.from(gssvMap.keys()).slice(0, 50)]),
+      new Set([
+        ...recentIds,
+        ...popIds.slice(0, 60),
+        ...addIds.slice(0, 40),
+        ...ftpIds.slice(0, 40),
+        ...Array.from(gssvByProduct.keys()).slice(0, 120),
+      ]),
     ).filter(Boolean);
 
     const products: CatalogProduct[] = [];
-    const fix = (u: unknown) => {
-      const s = typeof u === 'string' ? u : '';
-      return s.startsWith('//') ? `https:${s}` : s;
-    };
-    for (let i = 0; i < Math.min(batchIds.length, 100); i += 20) {
+    for (let i = 0; i < batchIds.length; i += 20) {
       const chunk = batchIds.slice(i, i + 20);
       const prodRes = await relayFetch(
         `https://catalog.gamepass.com/v3/products?market=${login.market}&language=${encodeURIComponent(locale)}&hydration=RemoteHighSapphire0`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'calling-app-name': 'psbox-browser',
+            'calling-app-version': '1.0',
+            'ms-cv': '0.0',
+          },
           body: JSON.stringify({ Products: chunk }),
         },
       );
       if (!prodRes.ok) continue;
       const prodJson = (await prodRes.json()) as { Products?: Record<string, Record<string, unknown>> };
       for (const [id, p] of Object.entries(prodJson.Products ?? {})) {
+        const imgs = (p.Images || {}) as Record<string, Record<string, unknown>>;
+        const hero = fixImgUrl(
+          (p.Image_Hero as { URL?: string } | undefined)?.URL ??
+            (p.Image_TitledHero as { URL?: string } | undefined)?.URL ??
+            (p.ImageHero as { URL?: string } | undefined)?.URL ??
+            imgs.TitledHeroArt?.URL ??
+            imgs.SuperHeroArt?.URL,
+        );
+        const tile = fixImgUrl(
+          (p.Image_Tile as { URL?: string } | undefined)?.URL ??
+            (p.ImageTile as { URL?: string } | undefined)?.URL ??
+            imgs.BoxArt?.URL ??
+            imgs.Logo?.URL,
+        );
+        const poster = fixImgUrl(
+          (p.Image_Poster as { URL?: string } | undefined)?.URL ??
+            (p.ImagePoster as { URL?: string } | undefined)?.URL ??
+            imgs.Poster?.URL ??
+            tile,
+        );
         const rating = (p.ContentRating as Record<string, unknown> | undefined) ?? {};
+        const childIds = Array.isArray(p.ChildXboxTitleIds) ? (p.ChildXboxTitleIds as string[]) : [];
+        const cats = Array.isArray(p.LocalizedCategories)
+          ? (p.LocalizedCategories as string[])
+          : Array.isArray(p.Categories)
+            ? (p.Categories as string[])
+            : [];
+        const title = String(p.ProductTitle || '');
+        const xcloudTitleId = String(p.XCloudTitleId || gssvByProduct.get(id)?.titleId || '');
+        if (
+          /ARTBOOK|SOUNDTRACK|DIGITALSTORYART|INSTALLPACK|DIGITALEXTRAS|BONUSCONTENT/i.test(xcloudTitleId) ||
+          /\b(soundtrack|artbook|digital art book)\b/i.test(title)
+        ) {
+          continue;
+        }
+        const gssv = gssvByProduct.get(id);
+        const xboxTitleId = String(p.XboxTitleId ?? gssv?.xboxTitleId ?? childIds[0] ?? '');
+        const isF2p = f2pSet.has(id);
+        const titleFriends = friends.filter(
+          (f) => f.titleId && (f.titleId === xboxTitleId || f.titleId === gssv?.titleId),
+        );
+
         products.push({
           productId: id,
-          xcloudTitleId: String(p.XCloudTitleId || gssvMap.get(id) || ''),
-          xboxTitleId: String(p.XboxTitleId || ''),
-          title: String(p.ProductTitle || ''),
+          xcloudTitleId,
+          xboxTitleId,
+          title,
           publisher: String(p.PublisherName || ''),
-          description: String(p.ProductDescription || ''),
-          tileUrl: fix((p.ImageTile as { URL?: string } | undefined)?.URL),
-          posterUrl: fix((p.ImagePoster as { URL?: string } | undefined)?.URL),
-          heroUrl: fix((p.ImageHero as { URL?: string } | undefined)?.URL),
-          categories: Array.isArray(p.Categories) ? (p.Categories as string[]) : [],
-          plan: ftpIds.includes(id) ? 0 : 3,
-          ratingAge: String(rating.LongName ?? rating.RatingId ?? ''),
+          description: String(p.ProductDescription || p.ProductDescriptionShort || ''),
+          tileUrl: tile || poster || hero,
+          posterUrl: poster || tile || hero,
+          heroUrl: hero || poster || tile,
+          categories: cats,
+          plan: parsePlan(p.PassMetadataByPassProductId as Record<string, unknown> | undefined, isF2p),
+          ratingAge: String(rating.LongName ?? rating.RatingId ?? rating.Age ?? ''),
           ratingSystem: String(rating.RatingSystem ?? ''),
-          isFreeToPlay: ftpIds.includes(id),
-          playable: true,
+          isFreeToPlay: isF2p,
+          playable: Boolean(gssv) || gpSet.has(id) || isF2p,
+          mouseKeyboard: gssv?.mkb ?? false,
+          touch: gssv?.touch ?? false,
           platform: 'XSX',
+          friends: titleFriends,
         });
       }
     }
 
+    // Hydrate any owned/unlisted GSSV titles via displaycatalog.mp.microsoft.com
+    const hydratedSet = new Set(products.map((p) => p.productId));
+    const missingOwned = Array.from(gssvByProduct.keys()).filter((pid) => !hydratedSet.has(pid));
+    for (let i = 0; i < Math.min(missingOwned.length, 40); i += 20) {
+      const chunk = missingOwned.slice(i, i + 20);
+      try {
+        const dcRes = await relayFetch(
+          `https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds=${chunk.join(',')}&market=${login.market}&languages=${encodeURIComponent(locale)}`,
+        );
+        if (!dcRes.ok) continue;
+        const dcJson = (await dcRes.json()) as { Products?: Array<Record<string, unknown>> };
+        for (const p of dcJson.Products ?? []) {
+          const pid = String(p.ProductId ?? '');
+          const loc = ((p.LocalizedProperties as Array<Record<string, unknown>> | undefined) ?? [])[0] ?? {};
+          const imgs = Array.isArray(loc.Images) ? (loc.Images as Array<Record<string, unknown>>) : [];
+          const findImg = (purposes: string[]) => {
+            for (const purp of purposes) {
+              const found = imgs.find((im) => im.ImagePurpose === purp && typeof im.Uri === 'string');
+              if (found) return fixImgUrl(found.Uri);
+            }
+            return '';
+          };
+          const tile = findImg(['BoxArt', 'Tile', 'Poster']);
+          const poster = findImg(['Poster', 'BoxArt', 'Tile']);
+          const hero = findImg(['SuperHeroArt', 'TitledHeroArt', 'Hero', 'Poster']) || tile;
+          const gssv = gssvByProduct.get(pid);
+          if (!pid || !gssv) continue;
+          products.push({
+            productId: pid,
+            xcloudTitleId: gssv.titleId,
+            xboxTitleId: gssv.xboxTitleId,
+            title: String(loc.ProductTitle || pid),
+            publisher: String(loc.PublisherName || ''),
+            description: String(loc.ProductDescription || loc.ShortDescription || ''),
+            tileUrl: tile || poster || hero,
+            posterUrl: poster || tile || hero,
+            heroUrl: hero || poster || tile,
+            categories: [],
+            plan: f2pSet.has(pid) ? 0 : 3,
+            ratingAge: '',
+            ratingSystem: '',
+            isFreeToPlay: f2pSet.has(pid),
+            playable: true,
+            mouseKeyboard: gssv.mkb,
+            touch: gssv.touch,
+            platform: 'XSX',
+          });
+        }
+      } catch {
+        // ignore fallback batch error
+      }
+    }
+
+    const ownedIds = Array.from(gssvByProduct.keys()).filter(
+      (pid) => !gpSet.has(pid) && !f2pSet.has(pid),
+    );
+
     return {
-      demoMode: false,
-      recentIds: [],
+      recentIds,
       popularIds: popIds,
       recentlyAddedIds: addIds,
       freeToPlayIds: ftpIds,
-      ownedIds: ftpIds,
+      ownedIds,
       products,
       regions: login.regions,
     };
   },
 
+  async getAchievements(xboxTitleId: string, locale = 'en-US'): Promise<AchievementItem[]> {
+    if (!xboxTitleId) return [];
+    if (await detectLocalBackend()) {
+      const res = await fetch(
+        `./api/xcloud/achievements/${encodeURIComponent(xboxTitleId)}?lang=${encodeURIComponent(locale)}`,
+      );
+      if (!res.ok) return [];
+      const data = (await res.json()) as { achievements?: AchievementItem[] };
+      return data.achievements ?? [];
+    }
+    const st = loadStaticState();
+    const xuid = st?.profile?.xuid;
+    const xbl = st?.xblProfile;
+    if (!xuid || !xbl) return [];
+    try {
+      const r = await relayFetch(
+        `https://achievements.xboxlive.com/users/xuid(${encodeURIComponent(xuid)})/achievements?titleId=${encodeURIComponent(xboxTitleId)}&maxItems=100`,
+        {
+          headers: {
+            Authorization: `XBL3.0 x=${xbl.userHash};${xbl.token}`,
+            'x-xbl-contract-version': '2',
+            'Accept-Language': locale,
+          },
+        },
+      );
+      if (!r.ok) return [];
+      const data = (await r.json()) as { achievements?: Array<Record<string, unknown>> };
+      return (data.achievements ?? []).map((a) => {
+        const rewards = Array.isArray(a.rewards) ? (a.rewards as Array<Record<string, unknown>>) : [];
+        const gsReward = rewards.find((rw) => rw.type === 'Gamerscore');
+        const unlocked = a.progressState === 'Achieved';
+        const progression = a.progression as { timeUnlocked?: string } | undefined;
+        return {
+          id: String(a.id ?? ''),
+          name: String(a.name ?? ''),
+          description: String(a.description ?? ''),
+          lockedDescription: String(a.lockedDescription ?? ''),
+          gamerscore: Number(gsReward?.value ?? 0) || 0,
+          unlocked,
+          isSecret: Boolean(a.isSecret),
+          unlockedAt: unlocked && progression?.timeUnlocked ? progression.timeUnlocked : undefined,
+        };
+      });
+    } catch {
+      return [];
+    }
+  },
+
   async getConsoles(): Promise<HomeConsole[]> {
     if (await detectLocalBackend()) {
       const res = await fetch('./api/xcloud/consoles');
+      if (!res.ok) return [];
       const data = await res.json();
       return data.consoles ?? [];
     }
     const st = loadStaticState();
-    if (!st || st.demoMode || !st.gssvHome) return DEMO_CONSOLES;
+    if (!st || !st.gssvHome) return [];
     const res = await relayFetch(`${st.gssvHome.selectedRegion.baseUri}/v6/servers/home`, {
       headers: {
         Authorization: `Bearer ${st.gssvHome.gsToken}`,
@@ -684,9 +955,11 @@ export const psboxApi = {
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Session start failed');
       return res.json();
     }
-    const st = loadStaticState();
-    const login = isHome ? st?.gssvHome : st?.gssvCloud;
-    if (!st || !login) throw new Error('Not signed in to xCloud');
+    const rawSt = loadStaticState();
+    if (!rawSt) throw new Error('Not signed in to xCloud');
+    const st = await ensureStaticSessionFresh(rawSt);
+    const login = isHome ? st.gssvHome : st.gssvCloud;
+    if (!login) throw new Error('Not signed in to xCloud');
     const kind = isHome ? 'home' : 'cloud';
     const res = await relayFetch(`${login.selectedRegion.baseUri}/v5/sessions/${kind}/play`, {
       method: 'POST',

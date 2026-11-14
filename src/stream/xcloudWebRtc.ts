@@ -41,6 +41,28 @@ export interface XCloudSessionCallbacks {
   onClosed: (reason: string) => void;
 }
 
+function decodeTeredoCandidate(candidateLine: string): { ipv4: string; port: number } | null {
+  const parts = candidateLine.trim().split(/\s+/);
+  if (parts.length < 6) return null;
+  const addr = parts[4].toLowerCase();
+  if (!addr.startsWith('2001:0:') && !addr.startsWith('2001:0000:')) return null;
+  // Expand compressed IPv6 into 8 16-bit words
+  const halves = addr.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':').filter(Boolean) : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':').filter(Boolean) : [];
+  const missing = 8 - (left.length + right.length);
+  if (missing < 0) return null;
+  const words = [...left, ...Array(missing).fill('0'), ...right].map((h) => parseInt(h, 16));
+  if (words.length !== 8 || words.some((w) => Number.isNaN(w))) return null;
+  if (words[0] !== 0x2001 || words[1] !== 0x0000) return null;
+  const port = (~words[5]) & 0xffff;
+  const w6 = words[6] ^ 0xffff;
+  const w7 = words[7] ^ 0xffff;
+  const ipv4 = `${(w6 >> 8) & 0xff}.${w6 & 0xff}.${(w7 >> 8) & 0xff}.${w7 & 0xff}`;
+  return { ipv4, port };
+}
+
 export class XCloudWebRtcClient {
   private pc: RTCPeerConnection | null = null;
   private chatCh: RTCDataChannel | null = null;
@@ -293,10 +315,25 @@ export class XCloudWebRtcClient {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    await psboxApi.sendSdpOffer(offer.sdp ?? '');
+    // Wait briefly for ICE gathering so local candidates are ready
+    if (pc.iceGatheringState !== 'complete') {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          pc.removeEventListener('icegatheringstatechange', onState);
+          resolve();
+        };
+        const onState = () => {
+          if (pc.iceGatheringState === 'complete') done();
+        };
+        pc.addEventListener('icegatheringstatechange', onState);
+        setTimeout(done, 2500);
+      });
+    }
+
+    await psboxApi.sendSdpOffer(pc.localDescription?.sdp ?? offer.sdp ?? '');
 
     let answerSdp = '';
-    for (let i = 0; i < 30 && !this.stopped; i++) {
+    for (let i = 0; i < 40 && !this.stopped; i++) {
       const d = await psboxApi.pollSdpAnswer();
       if (d.ready && d.sdp) {
         answerSdp = d.sdp;
@@ -307,18 +344,35 @@ export class XCloudWebRtcClient {
     if (!answerSdp) throw new Error('Timed out waiting for xCloud SDP answer');
     await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
 
-    // Exchange ICE candidates
-    await new Promise((r) => setTimeout(r, 400));
+    // Exchange ICE candidates (up to 20s polling + Teredo IPv4 decoding for xHome)
     if (gatheredCandidates.length > 0) {
       await psboxApi.sendIceCandidates(gatheredCandidates);
     }
-    for (let i = 0; i < 10 && !this.stopped; i++) {
+    for (let i = 0; i < 25 && !this.stopped; i++) {
       const candidates = await psboxApi.pollIceCandidates();
-      for (const c of candidates) {
+      const usable = candidates.filter((c) => c.candidate && !c.candidate.includes('end-of-candidates'));
+      for (const c of usable) {
+        const teredo = decodeTeredoCandidate(c.candidate);
+        if (teredo) {
+          await pc
+            .addIceCandidate({
+              candidate: `candidate:10 1 UDP 1 ${teredo.ipv4} 9002 typ host`,
+              sdpMid: c.sdpMid || '0',
+              sdpMLineIndex: c.sdpMLineIndex ?? 0,
+            })
+            .catch(() => {});
+          await pc
+            .addIceCandidate({
+              candidate: `candidate:11 1 UDP 1 ${teredo.ipv4} ${teredo.port} typ host`,
+              sdpMid: c.sdpMid || '0',
+              sdpMLineIndex: c.sdpMLineIndex ?? 0,
+            })
+            .catch(() => {});
+        }
         await pc.addIceCandidate(c).catch(() => {});
       }
-      if (candidates.length > 0) break;
-      await new Promise((res) => setTimeout(res, 400));
+      if (usable.length > 0) break;
+      await new Promise((res) => setTimeout(res, 750));
     }
 
     this.startKeepalive();
@@ -328,7 +382,11 @@ export class XCloudWebRtcClient {
 
   private onHandshakeAck(resolution: ResolutionMode) {
     this.controlCh?.send(JSON.stringify({ message: 'authorizationRequest', accessKey: CONTROL_ACCESS_KEY }));
+    // Same controller reset sequence as play.xbox.com
     this.controlCh?.send(JSON.stringify({ message: 'gamepadChanged', gamepadIndex: 0, wasAdded: true }));
+    this.controlCh?.send(JSON.stringify({ message: 'gamepadChanged', gamepadIndex: 0, wasAdded: false }));
+    this.controlCh?.send(JSON.stringify({ message: 'gamepadChanged', gamepadIndex: 0, wasAdded: true }));
+    this.controlCh?.send(JSON.stringify({ message: 'videoKeyframeRequested', ifrRequested: true }));
 
     const alias =
       resolution === '720p'

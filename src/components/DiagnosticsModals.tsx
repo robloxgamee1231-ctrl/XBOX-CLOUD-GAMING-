@@ -22,12 +22,11 @@ import type { AppSettings, GyroMode, TouchpadAction, TouchpadShortcuts, TriggerP
 
 /* ───────────────────────── 1. Check My Sign-In Modal ───────────────────────── */
 export const SignInCheckModal: React.FC<{
-  demoMode: boolean;
   gamertag: string;
   subscription: string;
   previewFeatures: boolean;
   onClose: () => void;
-}> = ({ demoMode, gamertag, subscription, previewFeatures, onClose }) => {
+}> = ({ gamertag, subscription, previewFeatures, onClose }) => {
   const [stages, setStages] = useState<
     Array<{ name: string; done: boolean; ok: boolean; detail: string }>
   >([
@@ -41,7 +40,7 @@ export const SignInCheckModal: React.FC<{
 
   const runCheck = async () => {
     const relay = getRelayUrl();
-    const sess = await psboxApi.getSession().catch(() => ({ staticHosting: false }));
+    const sess = await psboxApi.getSession().catch(() => ({ signedIn: false, staticHosting: false }));
     const isStatic = Boolean(sess.staticHosting);
     const stepDelay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -51,44 +50,38 @@ export const SignInCheckModal: React.FC<{
       );
     };
 
-    await stepDelay(180);
+    await stepDelay(160);
     updateStage(
       0,
-      true,
-      demoMode
-        ? `Demo session stored locally (${gamertag})`
-        : `Persisted browser session active (${gamertag})`
+      sess.signedIn,
+      sess.signedIn ? `Signed in as ${gamertag}` : 'No active Xbox session'
     );
 
-    await stepDelay(220);
-    if (demoMode) {
-      updateStage(
-        1,
-        false,
-        relay
-          ? 'Demo Mode active (Sign out to authenticate with Microsoft account)'
-          : isStatic
-            ? 'Static Demo Mode (Add Cloudflare Relay URL in Settings for live MSA)'
-            : 'Demo Mode active (Sign out to use Microsoft Device Code)'
-      );
-    } else {
-      updateStage(1, true, 'OAuth 2.0 refresh & access tokens verified');
-    }
+    await stepDelay(180);
+    updateStage(
+      1,
+      sess.signedIn,
+      sess.signedIn
+        ? isStatic && relay
+          ? 'OAuth 2.0 tokens active via CORS Relay'
+          : 'OAuth 2.0 refresh & access tokens verified'
+        : 'Not signed in'
+    );
 
-    await stepDelay(220);
-    updateStage(2, !demoMode, demoMode ? 'Simulated in Demo Mode' : 'Xbox Live User Token active');
+    await stepDelay(180);
+    updateStage(2, sess.signedIn, sess.signedIn ? 'Xbox Live User Token active' : 'Unavailable');
 
-    await stepDelay(220);
-    updateStage(3, !demoMode, demoMode ? 'Simulated in Demo Mode' : 'XSTS Security Token valid');
+    await stepDelay(180);
+    updateStage(3, sess.signedIn, sess.signedIn ? 'XSTS Security Token valid' : 'Unavailable');
 
-    await stepDelay(220);
+    await stepDelay(180);
     updateStage(
       4,
-      true,
-      `Offering: ${subscription.toLowerCase() === 'free' ? 'xgpuwebf2p' : 'xgpuweb'} (${subscription})`
+      sess.signedIn,
+      `Offering: ${subscription.toLowerCase().includes('free') ? 'xgpuwebf2p' : 'xgpuweb'} (${subscription || 'None'})`
     );
 
-    await stepDelay(200);
+    await stepDelay(160);
     updateStage(
       5,
       previewFeatures,

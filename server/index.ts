@@ -39,6 +39,7 @@ import {
 } from './xcloud/gssv.ts';
 import {
   fetchCatalogProducts,
+  fetchDisplayCatalogProducts,
   fetchFriendsPresence,
   fetchSiglList,
   fetchTitlePlatforms,
@@ -52,7 +53,6 @@ import {
   saveSessionsToDisk,
   type StoredSession,
 } from './sessionStore.ts';
-import { DEMO_CONSOLES, DEMO_PROFILE, getDemoCatalog } from './demoData.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const COOKIE_NAME = 'psbox_sid';
@@ -100,12 +100,17 @@ async function completeXboxChain(session: StoredSession, loginCountry = '') {
     gssvCloud = await gssvLogin(gssvXsts.token, 'xgpuweb', loginCountry);
     session.gssvCloud = gssvCloud;
   } catch (err) {
-    // Some free accounts only have xhome or F2P; try xhome before failing
+    // Free Xbox accounts can stream Free-to-Play cloud titles (xgpuwebf2p) or xHome consoles
     try {
-      gssvHome = await gssvLogin(gssvXsts.token, 'xhome', loginCountry);
-      session.gssvHome = gssvHome;
+      gssvCloud = await gssvLogin(gssvXsts.token, 'xgpuwebf2p', loginCountry);
+      session.gssvCloud = gssvCloud;
     } catch {
-      throw err;
+      try {
+        gssvHome = await gssvLogin(gssvXsts.token, 'xhome', loginCountry);
+        session.gssvHome = gssvHome;
+      } catch {
+        throw err;
+      }
     }
   }
 
@@ -122,19 +127,18 @@ async function completeXboxChain(session: StoredSession, loginCountry = '') {
     xuid: profileInfo.xuid || userToken.xuid,
     gamerpicUrl: profileInfo.gamerpicUrl,
     gamerscore: profileInfo.gamerscore,
-    subscription: sub.subscription,
+    subscription:
+      sub.subscription || (gssvCloud?.offering === 'xgpuwebf2p' ? 'Free (Cloud F2P)' : gssvCloud ? 'Ultimate' : ''),
     playtimeRemainingSec: sub.playtimeRemainingSec,
     playtimeMaxSec: sub.playtimeMaxSec,
     playtimeUnlimited: sub.playtimeUnlimited,
   };
-  session.demoMode = false;
   session.loginCountry = loginCountry;
   session.updatedAt = Date.now();
   saveSessionsToDisk();
 }
 
 async function ensureValidAuth(session: StoredSession) {
-  if (session.demoMode) return;
   if (!session.msaTokens?.refreshToken) throw new Error('Not signed in');
   const now = Math.floor(Date.now() / 1000);
   const gssvExpired =
@@ -155,25 +159,12 @@ async function ensureValidAuth(session: StoredSession) {
 
 app.get('/api/auth/session', async (req, res) => {
   const session = attachSession(req, res);
-  if (session.demoMode) {
-    res.json({
-      signedIn: true,
-      demoMode: true,
-      profile: DEMO_PROFILE,
-      regions: getDemoCatalog().regions,
-      selectedRegion: 'EASTUS',
-      market: 'US',
-      loginCountry: session.loginCountry,
-    });
-    return;
-  }
 
   if (session.msaTokens?.refreshToken && session.profile) {
     try {
       await ensureValidAuth(session);
       res.json({
         signedIn: true,
-        demoMode: false,
         profile: session.profile,
         regions: session.gssvCloud?.regions ?? session.gssvHome?.regions ?? [],
         selectedRegion:
@@ -187,7 +178,7 @@ app.get('/api/auth/session', async (req, res) => {
     }
   }
 
-  res.json({ signedIn: false, demoMode: false });
+  res.json({ signedIn: false });
 });
 
 app.post('/api/auth/device-code', async (req, res) => {
@@ -245,22 +236,6 @@ app.post('/api/auth/poll', async (req, res) => {
   }
 });
 
-app.post('/api/auth/demo', (req, res) => {
-  const session = attachSession(req, res);
-  session.demoMode = true;
-  session.profile = DEMO_PROFILE;
-  session.updatedAt = Date.now();
-  saveSessionsToDisk();
-  res.json({
-    signedIn: true,
-    demoMode: true,
-    profile: DEMO_PROFILE,
-    regions: getDemoCatalog().regions,
-    selectedRegion: 'EASTUS',
-    market: 'US',
-  });
-});
-
 app.post('/api/auth/signout', (req, res) => {
   const sid = typeof req.cookies?.[COOKIE_NAME] === 'string' ? req.cookies[COOKIE_NAME] : undefined;
   if (sid) deleteSession(sid);
@@ -279,12 +254,6 @@ app.post('/api/xcloud/region', async (req, res) => {
   const regionName = String(req.body?.regionName ?? '');
   const loginCountry =
     typeof req.body?.loginCountry === 'string' ? req.body.loginCountry : session.loginCountry;
-
-  if (session.demoMode) {
-    session.loginCountry = loginCountry;
-    res.json({ ok: true, selectedRegion: regionName || 'EASTUS', loginCountry });
-    return;
-  }
 
   try {
     if (loginCountry !== session.loginCountry) {
@@ -311,13 +280,8 @@ app.post('/api/xcloud/region', async (req, res) => {
 
 app.get('/api/xcloud/library', async (req, res) => {
   const session = getSession(req.cookies?.[COOKIE_NAME]);
-  if (!session || (!session.demoMode && !session.msaTokens)) {
+  if (!session || !session.msaTokens) {
     res.status(401).json({ error: 'Not signed in' });
-    return;
-  }
-
-  if (session.demoMode) {
-    res.json({ demoMode: true, ...getDemoCatalog() });
     return;
   }
 
@@ -326,7 +290,6 @@ app.get('/api/xcloud/library', async (req, res) => {
     const login = session.gssvCloud;
     if (!login) {
       res.json({
-        demoMode: false,
         recentIds: [],
         popularIds: [],
         recentlyAddedIds: [],
@@ -364,6 +327,13 @@ app.get('/api/xcloud/library', async (req, res) => {
     for (const t of allTitles.slice(0, 120)) if (t.productId) productIdsToHydrate.add(t.productId);
 
     const productMap = await fetchCatalogProducts(Array.from(productIdsToHydrate), market, lang, true);
+    const missingIds = Array.from(productIdsToHydrate).filter((id) => !productMap[id]);
+    if (missingIds.length > 0) {
+      const dcMap = await fetchDisplayCatalogProducts(missingIds.slice(0, 40), market, lang);
+      for (const [k, v] of Object.entries(dcMap)) {
+        if (!productMap[k]) productMap[k] = v;
+      }
+    }
 
     const gssvByProduct = new Map(allTitles.filter((t) => t.productId).map((t) => [t.productId, t]));
     const xboxIds = Array.from(
@@ -400,7 +370,6 @@ app.get('/api/xcloud/library', async (req, res) => {
       .map((t) => t.productId);
 
     res.json({
-      demoMode: false,
       recentIds: mruTitles.map((t) => t.productId).filter(Boolean),
       popularIds: popList.productIds,
       recentlyAddedIds: newList.productIds,
@@ -414,14 +383,67 @@ app.get('/api/xcloud/library', async (req, res) => {
   }
 });
 
-app.get('/api/xcloud/consoles', async (req, res) => {
+app.get('/api/xcloud/achievements/:titleId', async (req, res) => {
   const session = getSession(req.cookies?.[COOKIE_NAME]);
-  if (!session || (!session.demoMode && !session.msaTokens)) {
+  if (!session || !session.msaTokens) {
     res.status(401).json({ error: 'Not signed in' });
     return;
   }
-  if (session.demoMode) {
-    res.json({ consoles: DEMO_CONSOLES });
+  const titleId = String(req.params.titleId || '').trim();
+  if (!titleId) {
+    res.json({ achievements: [] });
+    return;
+  }
+  try {
+    await ensureValidAuth(session);
+    const xuid = session.profile?.xuid || session.xblProfileXsts?.xuid || session.xblUser?.xuid;
+    const xsts = session.xblProfileXsts;
+    if (!xuid || !xsts) {
+      res.json({ achievements: [] });
+      return;
+    }
+    const r = await fetch(
+      `https://achievements.xboxlive.com/users/xuid(${encodeURIComponent(xuid)})/achievements?titleId=${encodeURIComponent(titleId)}&maxItems=100`,
+      {
+        headers: {
+          Authorization: xblAuthHeader(xsts),
+          'x-xbl-contract-version': '2',
+          'Accept-Language': String(req.query.lang || 'en-US'),
+        },
+        signal: AbortSignal.timeout(10000),
+      },
+    );
+    if (!r.ok) {
+      res.json({ achievements: [] });
+      return;
+    }
+    const data = (await r.json()) as { achievements?: Array<Record<string, unknown>> };
+    const achievements = (data.achievements ?? []).map((a) => {
+      const rewards = Array.isArray(a.rewards) ? (a.rewards as Array<Record<string, unknown>>) : [];
+      const gsReward = rewards.find((rw) => rw.type === 'Gamerscore');
+      const unlocked = a.progressState === 'Achieved';
+      const progression = a.progression as { timeUnlocked?: string } | undefined;
+      return {
+        id: String(a.id ?? ''),
+        name: String(a.name ?? ''),
+        description: String(a.description ?? ''),
+        lockedDescription: String(a.lockedDescription ?? ''),
+        gamerscore: Number(gsReward?.value ?? 0) || 0,
+        unlocked,
+        isSecret: Boolean(a.isSecret),
+        unlockedAt: unlocked && progression?.timeUnlocked ? progression.timeUnlocked : undefined,
+      };
+    });
+    res.json({ achievements });
+  } catch {
+    res.json({ achievements: [] });
+  }
+});
+
+app.get('/api/xcloud/consoles', async (req, res) => {
+  const session = getSession(req.cookies?.[COOKIE_NAME]);
+  if (!session || !session.msaTokens) {
+    res.status(401).json({ error: 'Not signed in' });
     return;
   }
   try {
@@ -453,14 +475,6 @@ app.post('/api/xcloud/session/start', async (req, res) => {
   const resolution = (req.body?.resolution ?? '1080p') as ResolutionMode;
   const locale = String(req.body?.locale ?? 'en-US');
 
-  if (session.demoMode) {
-    session.activeSessionPath = `/demo/${titleId}`;
-    session.activeSessionIsHome = isHome;
-    session.activeResolution = resolution;
-    res.json({ demoMode: true, sessionPath: session.activeSessionPath, state: 'ReadyToConnect' });
-    return;
-  }
-
   try {
     await ensureValidAuth(session);
     const login = isHome ? session.gssvHome : session.gssvCloud;
@@ -469,7 +483,7 @@ app.post('/api/xcloud/session/start', async (req, res) => {
     session.activeSessionPath = started.sessionPath;
     session.activeSessionIsHome = isHome;
     session.activeResolution = resolution;
-    res.json({ demoMode: false, sessionPath: started.sessionPath });
+    res.json({ sessionPath: started.sessionPath });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
@@ -479,10 +493,6 @@ app.get('/api/xcloud/session/state', async (req, res) => {
   const session = getSession(req.cookies?.[COOKIE_NAME]);
   if (!session || !session.activeSessionPath) {
     res.status(400).json({ error: 'No active session' });
-    return;
-  }
-  if (session.demoMode) {
-    res.json({ state: 'ReadyToConnect', waitSeconds: 0 });
     return;
   }
   try {
@@ -504,10 +514,6 @@ app.post('/api/xcloud/session/connect', async (req, res) => {
   const session = getSession(req.cookies?.[COOKIE_NAME]);
   if (!session || !session.activeSessionPath) {
     res.status(400).json({ error: 'No active session' });
-    return;
-  }
-  if (session.demoMode) {
-    res.json({ ok: true });
     return;
   }
   try {
@@ -605,10 +611,6 @@ app.post('/api/xcloud/session/keepalive', async (req, res) => {
     res.json({ ok: true });
     return;
   }
-  if (session.demoMode) {
-    res.json({ ok: true });
-    return;
-  }
   try {
     const login = session.activeSessionIsHome ? session.gssvHome : session.gssvCloud;
     if (login) await keepaliveSession(login, session.activeSessionPath, session.activeResolution);
@@ -620,7 +622,7 @@ app.post('/api/xcloud/session/keepalive', async (req, res) => {
 
 app.delete('/api/xcloud/session', async (req, res) => {
   const session = getSession(req.cookies?.[COOKIE_NAME]);
-  if (session?.activeSessionPath && !session.demoMode) {
+  if (session?.activeSessionPath) {
     const login = session.activeSessionIsHome ? session.gssvHome : session.gssvCloud;
     if (login) await stopCloudSession(login, session.activeSessionPath, session.activeResolution);
   }
