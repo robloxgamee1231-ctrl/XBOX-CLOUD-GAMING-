@@ -43,8 +43,20 @@ interface StaticAuthState {
 
 let hasLocalBackend: boolean | null = null;
 
+const ENV_RELAY_URL = (import.meta.env?.VITE_PSBOX_RELAY_URL || '').trim().replace(/\/+$/, '');
+
 export function getRelayUrl(): string {
-  return (localStorage.getItem(LS_RELAY_URL) || '').trim().replace(/\/+$/, '');
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const qp = (params.get('relay') || '').trim().replace(/\/+$/, '');
+    if (qp && /^https?:\/\//i.test(qp)) {
+      localStorage.setItem(LS_RELAY_URL, qp);
+      return qp;
+    }
+  } catch {
+    // ignore
+  }
+  return (localStorage.getItem(LS_RELAY_URL) || ENV_RELAY_URL || '').trim().replace(/\/+$/, '');
 }
 
 export function setRelayUrl(url: string) {
@@ -478,6 +490,77 @@ export const psboxApi = {
 
     const st = loadStaticState();
     if (!st || st.demoMode || !st.gssvCloud) {
+      // Try live public Xbox Game Pass Cloud catalog if browser/relay allows it; otherwise use rich real-game snapshot
+      try {
+        const fetchPublic = (url: string, init?: RequestInit) =>
+          getRelayUrl() ? relayFetch(url, init) : fetch(url, { ...init, signal: AbortSignal.timeout(3500) });
+        const [popRes, addRes, ftpRes] = await Promise.all([
+          fetchPublic(`https://catalog.gamepass.com/sigls/v2?id=6a589fa0-d493-472b-8e20-3813699d7056&market=US&language=${encodeURIComponent(locale)}`),
+          fetchPublic(`https://catalog.gamepass.com/sigls/v2?id=06323672-b8c8-43cc-b0de-32d5a9834749&market=US&language=${encodeURIComponent(locale)}`),
+          fetchPublic(`https://catalog.gamepass.com/sigls/v2?id=d8f4afcd-882a-49e3-86b3-f61fa0172b75&market=US&language=${encodeURIComponent(locale)}`),
+        ]);
+        if (popRes.ok) {
+          const extractIds = async (r: Response) => {
+            if (!r.ok) return [] as string[];
+            const arr = (await r.json()) as Array<{ id?: string }>;
+            return Array.isArray(arr) ? arr.map((x) => x.id).filter((x): x is string => Boolean(x)) : [];
+          };
+          const [popularIds, recentlyAddedIds, freeToPlayIds] = await Promise.all([
+            extractIds(popRes),
+            extractIds(addRes),
+            extractIds(ftpRes),
+          ]);
+          const topIds = Array.from(new Set([...popularIds.slice(0, 35), ...recentlyAddedIds.slice(0, 20), ...freeToPlayIds.slice(0, 15)]));
+          const products: CatalogProduct[] = [];
+          const fix = (u: unknown) => {
+            const s = typeof u === 'string' ? u : '';
+            return s.startsWith('//') ? `https:${s}` : s;
+          };
+          for (let i = 0; i < Math.min(topIds.length, 60); i += 20) {
+            const chunk = topIds.slice(i, i + 20);
+            const pr = await fetchPublic(
+              `https://catalog.gamepass.com/v3/products?market=US&language=${encodeURIComponent(locale)}&hydration=RemoteHighSapphire0`,
+              { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ Products: chunk }) },
+            );
+            if (!pr.ok) continue;
+            const pj = (await pr.json()) as { Products?: Record<string, Record<string, unknown>> };
+            for (const [id, p] of Object.entries(pj.Products ?? {})) {
+              const rating = (p.ContentRating as Record<string, unknown> | undefined) ?? {};
+              products.push({
+                productId: id,
+                xcloudTitleId: String(p.XCloudTitleId || id),
+                xboxTitleId: String(p.XboxTitleId || ''),
+                title: String(p.ProductTitle || ''),
+                publisher: String(p.PublisherName || ''),
+                description: String(p.ProductDescription || ''),
+                tileUrl: fix((p.ImageTile as { URL?: string } | undefined)?.URL),
+                posterUrl: fix((p.ImagePoster as { URL?: string } | undefined)?.URL),
+                heroUrl: fix((p.ImageHero as { URL?: string } | undefined)?.URL),
+                categories: Array.isArray(p.Categories) ? (p.Categories as string[]) : [],
+                plan: freeToPlayIds.includes(id) ? 0 : 3,
+                ratingAge: String(rating.LongName ?? rating.RatingId ?? ''),
+                ratingSystem: String(rating.RatingSystem ?? ''),
+                isFreeToPlay: freeToPlayIds.includes(id),
+                playable: true,
+                platform: 'XSX',
+              });
+            }
+          }
+          if (products.length > 0) {
+            const fallback = getDemoLibrary();
+            return {
+              ...fallback,
+              recentIds: popularIds.slice(0, 6),
+              popularIds,
+              recentlyAddedIds,
+              freeToPlayIds,
+              products,
+            };
+          }
+        }
+      } catch {
+        // Browser CORS blocked direct catalog fetch; use embedded real Xbox Cloud Gaming catalog
+      }
       return getDemoLibrary();
     }
 
@@ -488,58 +571,83 @@ export const psboxApi = {
       'x-gssv-client': 'XboxComBrowser',
       'X-MS-Device-Info': buildDeviceInfo(st.activeResolution),
     };
-    const [titlesRes, popRes] = await Promise.all([
-      relayFetch(`${base}/v2/titles?mr=200`, { headers }),
+    const [titlesRes, popRes, addRes, ftpRes] = await Promise.all([
+      relayFetch(`${base}/v2/titles?mr=250`, { headers }),
       relayFetch(
-        `https://catalog.gamepass.com/sigls/v2?id=6a589fa0-d493-472b-8e20-3813699d7056&market=${login.market}&language=${locale}`,
+        `https://catalog.gamepass.com/sigls/v2?id=6a589fa0-d493-472b-8e20-3813699d7056&market=${login.market}&language=${encodeURIComponent(locale)}`,
+      ),
+      relayFetch(
+        `https://catalog.gamepass.com/sigls/v2?id=06323672-b8c8-43cc-b0de-32d5a9834749&market=${login.market}&language=${encodeURIComponent(locale)}`,
+      ),
+      relayFetch(
+        `https://catalog.gamepass.com/sigls/v2?id=d8f4afcd-882a-49e3-86b3-f61fa0172b75&market=${login.market}&language=${encodeURIComponent(locale)}`,
       ),
     ]);
-    const titlesJson = (await titlesRes.json()) as { results?: Array<{ titleId?: string; details?: { productId?: string } }> };
-    const popJson = (await popRes.json()) as Array<{ id?: string }>;
-    const popIds = popJson.map((x) => x.id).filter((x): x is string => Boolean(x));
+    const titlesJson = (await titlesRes.json()) as {
+      results?: Array<{ titleId?: string; details?: { productId?: string; supportsInGamePurchases?: boolean } }>;
+    };
+    const parseSigl = async (r: Response) => {
+      if (!r.ok) return [] as string[];
+      const arr = (await r.json()) as Array<{ id?: string }>;
+      return Array.isArray(arr) ? arr.map((x) => x.id).filter((x): x is string => Boolean(x)) : [];
+    };
+    const [popIds, addIds, ftpIds] = await Promise.all([
+      parseSigl(popRes),
+      parseSigl(addRes),
+      parseSigl(ftpRes),
+    ]);
     const gssvMap = new Map((titlesJson.results ?? []).map((t) => [t.details?.productId || '', t.titleId || '']));
-    const batchIds = Array.from(new Set([...popIds.slice(0, 40), ...Array.from(gssvMap.keys()).slice(0, 60)])).filter(Boolean);
+    const batchIds = Array.from(
+      new Set([...popIds.slice(0, 45), ...addIds.slice(0, 25), ...ftpIds.slice(0, 20), ...Array.from(gssvMap.keys()).slice(0, 50)]),
+    ).filter(Boolean);
 
-    const prodRes = await relayFetch(
-      `https://catalog.gamepass.com/v3/products?market=${login.market}&language=${locale}&hydration=RemoteHighSapphire0`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ Products: batchIds.slice(0, 20) }),
-      },
-    );
-    const prodJson = (await prodRes.json()) as { Products?: Record<string, Record<string, unknown>> };
-    const products: CatalogProduct[] = Object.entries(prodJson.Products ?? {}).map(([id, p]) => {
-      const fix = (u: unknown) => {
-        const s = typeof u === 'string' ? u : '';
-        return s.startsWith('//') ? `https:${s}` : s;
-      };
-      return {
-        productId: id,
-        xcloudTitleId: String(p.XCloudTitleId || gssvMap.get(id) || ''),
-        xboxTitleId: String(p.XboxTitleId || ''),
-        title: String(p.ProductTitle || ''),
-        publisher: String(p.PublisherName || ''),
-        description: String(p.ProductDescription || ''),
-        tileUrl: fix((p.ImageTile as { URL?: string } | undefined)?.URL),
-        posterUrl: fix((p.ImagePoster as { URL?: string } | undefined)?.URL),
-        heroUrl: fix((p.ImageHero as { URL?: string } | undefined)?.URL),
-        categories: Array.isArray(p.Categories) ? (p.Categories as string[]) : [],
-        plan: 3,
-        ratingAge: '',
-        ratingSystem: '',
-        playable: true,
-        platform: 'XSX',
-      };
-    });
+    const products: CatalogProduct[] = [];
+    const fix = (u: unknown) => {
+      const s = typeof u === 'string' ? u : '';
+      return s.startsWith('//') ? `https:${s}` : s;
+    };
+    for (let i = 0; i < Math.min(batchIds.length, 100); i += 20) {
+      const chunk = batchIds.slice(i, i + 20);
+      const prodRes = await relayFetch(
+        `https://catalog.gamepass.com/v3/products?market=${login.market}&language=${encodeURIComponent(locale)}&hydration=RemoteHighSapphire0`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ Products: chunk }),
+        },
+      );
+      if (!prodRes.ok) continue;
+      const prodJson = (await prodRes.json()) as { Products?: Record<string, Record<string, unknown>> };
+      for (const [id, p] of Object.entries(prodJson.Products ?? {})) {
+        const rating = (p.ContentRating as Record<string, unknown> | undefined) ?? {};
+        products.push({
+          productId: id,
+          xcloudTitleId: String(p.XCloudTitleId || gssvMap.get(id) || ''),
+          xboxTitleId: String(p.XboxTitleId || ''),
+          title: String(p.ProductTitle || ''),
+          publisher: String(p.PublisherName || ''),
+          description: String(p.ProductDescription || ''),
+          tileUrl: fix((p.ImageTile as { URL?: string } | undefined)?.URL),
+          posterUrl: fix((p.ImagePoster as { URL?: string } | undefined)?.URL),
+          heroUrl: fix((p.ImageHero as { URL?: string } | undefined)?.URL),
+          categories: Array.isArray(p.Categories) ? (p.Categories as string[]) : [],
+          plan: ftpIds.includes(id) ? 0 : 3,
+          ratingAge: String(rating.LongName ?? rating.RatingId ?? ''),
+          ratingSystem: String(rating.RatingSystem ?? ''),
+          isFreeToPlay: ftpIds.includes(id),
+          playable: true,
+          platform: 'XSX',
+        });
+      }
+    }
 
     return {
       demoMode: false,
       recentIds: [],
       popularIds: popIds,
-      recentlyAddedIds: [],
-      freeToPlayIds: [],
-      ownedIds: [],
+      recentlyAddedIds: addIds,
+      freeToPlayIds: ftpIds,
+      ownedIds: ftpIds,
       products,
       regions: login.regions,
     };

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Gamepad2, Keyboard, Lock, ShoppingBag, Star } from 'lucide-react';
+import { makePosterFallbackUri } from '../data/demoCatalog';
 import type { CatalogProduct } from '../types';
 
 interface GameCardProps {
@@ -37,7 +38,7 @@ export const GameCard: React.FC<GameCardProps> = ({
   onClick,
   size = 'normal',
 }) => {
-  const dim = size === 'compact' ? 'w-44 h-44 sm:w-48 sm:h-48' : 'w-48 h-48 sm:w-56 sm:h-56';
+  const dim = size === 'compact' ? 'w-full aspect-square' : 'w-44 h-44 sm:w-52 sm:h-52';
   const badge = planLabel(product.plan);
   const friends = product.friends ?? [];
 
@@ -54,6 +55,13 @@ export const GameCard: React.FC<GameCardProps> = ({
         src={product.tileUrl || product.posterUrl || product.heroUrl}
         alt={product.title}
         loading="lazy"
+        onError={(e) => {
+          const el = e.currentTarget;
+          if (!el.dataset.fallback) {
+            el.dataset.fallback = '1';
+            el.src = makePosterFallbackUri(product.title, product.publisher);
+          }
+        }}
         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
       />
 

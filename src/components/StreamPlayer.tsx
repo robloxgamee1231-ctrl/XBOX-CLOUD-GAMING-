@@ -1,10 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
+  Check,
+  Clock,
   Gamepad2,
   Keyboard,
   LogOut,
   Maximize,
+  Mic,
+  MicOff,
   Minimize,
   MousePointerClick,
   RefreshCw,
@@ -13,25 +18,60 @@ import {
   VolumeX,
   X,
 } from 'lucide-react';
+import { PSBOX_LAUNCH_TIPS } from '../data/psboxDefaults';
 import { GamepadButton } from '../stream/inputPacket';
 import {
   XCloudWebRtcClient,
   type StreamTelemetry,
   type VirtualKeyboardRequest,
 } from '../stream/xcloudWebRtc';
-import type { AppSettings, ResolutionMode, SharpnessLevel } from '../types';
+import type {
+  AppSettings,
+  DebandLevel,
+  GyroMode,
+  ResolutionMode,
+  SharpnessLevel,
+  TelemetryMask,
+  UpscalerMode,
+} from '../types';
 import { t } from '../i18n/translations';
-import { BrandMark } from './BrandMark';
+import { ButtonGlyph } from './PlayStationGlyphs';
 
 interface StreamPlayerProps {
   title: string;
+  heroUrl?: string;
   targetId: string;
   isHome: boolean;
   demoMode: boolean;
   regionName: string;
+  cloudTimeRemainingSec?: number;
   settings: AppSettings;
   onUpdateSettings: (patch: Partial<AppSettings>) => void;
   onExit: (elapsedSec: number) => void;
+}
+
+function playQueueReadyChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    [523.25, 659.25, 783.99].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.001, now + i * 0.09);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + i * 0.09 + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.09 + 0.32);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + i * 0.09);
+      osc.stop(now + i * 0.09 + 0.35);
+    });
+  } catch {
+    // ignore audio autoplay restrictions
+  }
 }
 
 const VK_MAP: Record<string, { bit?: number; vk: number }> = {
@@ -112,10 +152,12 @@ const TouchThumbstick: React.FC<{
 
 export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   title,
+  heroUrl,
   targetId,
   isHome,
   demoMode,
   regionName,
+  cloudTimeRemainingSec = -1,
   settings,
   onUpdateSettings,
   onExit,
@@ -130,7 +172,20 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [connected, setConnected] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [showStats, setShowStats] = useState(true);
+  const [menuTab, setMenuTab] = useState<'general' | 'controls' | 'guitar'>('general');
+  const [statsCustomizing, setStatsCustomizing] = useState(false);
+  const [menuHoverDesc, setMenuHoverDesc] = useState(
+    'Opens the Xbox Guide menu or sends the Xbox button to the game.'
+  );
+  const [guitarStrum, setGuitarStrum] = useState(true);
+  const [guitarTilt, setGuitarTilt] = useState(true);
+  const [guitarLanes, setGuitarLanes] = useState(['A', 'B', 'Y', 'X', 'LB', 'Back']);
+  const [tipIndex, setTipIndex] = useState(() => Math.floor(Math.random() * PSBOX_LAUNCH_TIPS.length));
+  const [frametimes, setFrametimes] = useState<number[]>(() => Array(30).fill(7));
+  const [micMuted, setMicMuted] = useState(true);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const [connectedPads, setConnectedPads] = useState<string[]>([]);
+  const [showStats, setShowStats] = useState(settings.statsEnabled ?? true);
   const [showVirtualPad, setShowVirtualPad] = useState(() =>
     typeof window !== 'undefined' ? 'ontouchstart' in window || navigator.maxTouchPoints > 0 : false,
   );
@@ -164,10 +219,41 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     y: false,
   });
 
+  // Rotate PSBox tips every 7 seconds while launching
+  useEffect(() => {
+    if (connected) return;
+    const id = window.setInterval(() => {
+      setTipIndex((i) => (i + 1) % PSBOX_LAUNCH_TIPS.length);
+    }, 7000);
+    return () => clearInterval(id);
+  }, [connected]);
+
+  // Watch connected pads for StreamMenu controller slot strip
+  useEffect(() => {
+    const syncPads = () => {
+      const pads = Array.from(navigator.getGamepads?.() ?? []).filter(Boolean) as Gamepad[];
+      setConnectedPads(pads.map((p) => p.id.split('(')[0].trim()));
+    };
+    syncPads();
+    window.addEventListener('gamepadconnected', syncPads);
+    window.addEventListener('gamepaddisconnected', syncPads);
+    const id = window.setInterval(syncPads, 2000);
+    return () => {
+      window.removeEventListener('gamepadconnected', syncPads);
+      window.removeEventListener('gamepaddisconnected', syncPads);
+      clearInterval(id);
+    };
+  }, []);
+
   useEffect(() => {
     startTimeRef.current = Date.now();
+    setConnected(false);
+    setStreamError(null);
     if (demoMode) {
-      const timer = window.setTimeout(() => setConnected(true), 650);
+      const timer = window.setTimeout(() => {
+        setConnected(true);
+        if (settings.queueReadyAlert) playQueueReadyChime();
+      }, 950);
       return () => clearTimeout(timer);
     }
 
@@ -179,8 +265,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           videoRef.current.play().catch(() => {});
         }
         setConnected(true);
+        if (settings.queueReadyAlert) playQueueReadyChime();
       },
-      onTelemetry: (stats) => setTelemetry(stats),
+      onTelemetry: (stats) => {
+        setTelemetry(stats);
+        const ft = stats.fps > 0 ? Math.max(4, Math.min(40, Math.round(1000 / stats.fps))) : 16;
+        setFrametimes((prev) => [...prev.slice(-39), ft]);
+      },
       onVirtualKeyboard: (req) => {
         setKbReq(req);
         setKbText(req.defaultText || '');
@@ -199,7 +290,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       client.stop();
       clientRef.current = null;
     };
-  }, [demoMode, targetId, isHome]);
+  }, [demoMode, targetId, isHome, reloadNonce]);
 
   useEffect(() => {
     clientRef.current?.setDeadzone(settings.deadzone);
@@ -401,6 +492,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           height: settings.resolution === '720p' ? 720 : settings.resolution === '1440p' ? 1440 : 1080,
           codec: 'H.264 High (Simulated)',
         });
+        setFrametimes((prev) => [...prev.slice(-39), Math.round(6 + Math.random() * 4)]);
       }
 
       raf = requestAnimationFrame(tick);
@@ -411,8 +503,16 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' || e.code === 'F12') {
+        e.preventDefault();
         setMenuOpen((prev) => !prev);
+        return;
+      }
+      if (e.code === 'Home') {
+        e.preventDefault();
+        clientRef.current?.pressNexusButton();
+        setNexusToast(true);
+        setTimeout(() => setNexusToast(false), 1400);
         return;
       }
       if (kbReq) return;
@@ -532,51 +632,101 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       )}
 
       {(!connected || streamError) && (
-        <div
-          className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-black/85 backdrop-blur-md z-20"
-          style={{
-            backgroundImage: `linear-gradient(rgba(8,12,10,0.88), rgba(8,12,10,0.94)), url('./assets/pic1.png')`,
-            backgroundSize: 'cover',
-          }}
-        >
-          <BrandMark size={68} className="mb-5" />
-          <h2 className="text-2xl font-bold text-white mb-2">{title}</h2>
-          {streamError ? (
-            <div className="max-w-md space-y-4">
-              <p className="text-sm text-rose-300 bg-rose-500/10 border border-rose-400/30 rounded-xl p-4">
-                {streamError}
+        <div className="absolute inset-0 flex flex-col items-center justify-between p-6 sm:p-12 text-center bg-[#0e0e0e] z-20">
+          {/* Hero Backdrop matching PSBox drawLaunching */}
+          <div
+            className="absolute inset-0 bg-cover bg-center opacity-35"
+            style={{ backgroundImage: `url('${heroUrl || './assets/pic1.png'}')` }}
+          />
+          <div className="absolute inset-0 bg-black/60" />
+
+          <div className="relative z-10" />
+
+          <div className="relative z-10 flex flex-col items-center max-w-xl">
+            <RefreshCw className="w-12 h-12 text-white psbox-spinner mb-6" />
+            <h2 className="text-3xl sm:text-5xl font-bold text-white tracking-tight mb-3">{title}</h2>
+            {streamError ? (
+              <div className="max-w-md space-y-4 mt-2">
+                <p className="text-sm text-rose-300 bg-rose-500/10 border border-rose-400/30 rounded-xl p-4">
+                  {streamError}
+                </p>
+                <button type="button" onClick={handleLeave} className="psbox-btn psbox-btn-primary">
+                  Return to Library
+                </button>
+              </div>
+            ) : (
+              <>
+                <p className="text-xl font-semibold text-[#bebebe]">Getting your game ready</p>
+                <p className="text-base text-[#8c8c8c] mt-2">{statusMsg}</p>
+              </>
+            )}
+          </div>
+
+          <div className="relative z-10 w-full max-w-5xl flex flex-col items-center gap-6">
+            {!streamError && (
+              <p className="text-sm sm:text-base text-[#8c8c8c] max-w-2xl leading-relaxed">
+                {PSBOX_LAUNCH_TIPS[tipIndex]}
               </p>
-              <button type="button" onClick={handleLeave} className="psbox-btn psbox-btn-primary">
-                Return to Library
+            )}
+            <div className="w-full flex justify-end">
+              <button
+                type="button"
+                onClick={handleLeave}
+                className="inline-flex items-center gap-2 text-sm font-semibold text-[#bebebe] hover:text-white cursor-pointer"
+              >
+                <ButtonGlyph icon="circle" style={settings.glyphStyle} size={22} />
+                <span>Cancel</span>
               </button>
             </div>
-          ) : (
-            <div className="flex flex-col items-center gap-3">
-              <RefreshCw className="w-7 h-7 text-emerald-400 psbox-spinner" />
-              <p className="text-sm text-[#b4bcc8]">{statusMsg}</p>
-              <button type="button" onClick={handleLeave} className="psbox-btn text-xs mt-2">
-                Cancel
-              </button>
-            </div>
-          )}
+          </div>
         </div>
       )}
 
       {connected && (
         <div className="absolute top-3 left-3 right-3 flex items-start justify-between gap-2 pointer-events-none z-10">
           {showStats ? (
-            <div className="pointer-events-auto bg-black/70 backdrop-blur-md border border-white/10 rounded-2xl px-3 py-1.5 text-[11px] sm:text-xs flex flex-wrap items-center gap-3">
-              <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
-                <Activity className="w-3.5 h-3.5" />
-                {telemetry.width}x{telemetry.height}@{Math.round(telemetry.fps || 60)}
-              </span>
-              <span className="text-[#cbd5e1]">
-                <strong className="text-white">{Math.round(telemetry.rttMs)} ms</strong>
-              </span>
-              <span className="hidden sm:inline text-[#cbd5e1]">
-                <strong className="text-white">{telemetry.bitrateMbps.toFixed(1)} Mbps</strong>
-              </span>
-              {regionName && <span className="hidden md:inline text-[#9aa4b8]">{regionName}</span>}
+            <div className="pointer-events-auto bg-[#181818]/90 backdrop-blur-md border border-white/10 rounded-xl px-3.5 py-2 text-xs space-y-1.5 shadow-xl">
+              <div className="flex flex-wrap items-center gap-3 font-semibold text-white">
+                {settings.telemetryMask.fps && (
+                  <span>
+                    {telemetry.height}p {Math.round(telemetry.fps || 60)} fps
+                  </span>
+                )}
+                {settings.telemetryMask.bitrate && (
+                  <span>{telemetry.bitrateMbps.toFixed(1)} Mbps</span>
+                )}
+                {settings.telemetryMask.latency && (
+                  <span>{Math.round(telemetry.rttMs)} ms</span>
+                )}
+                {settings.telemetryMask.loss && (
+                  <span>{telemetry.packetLossPct.toFixed(1)}%</span>
+                )}
+                {settings.telemetryMask.qp && <span>QP 24</span>}
+                {settings.telemetryMask.delay && <span>Dec 4.2 ms HW</span>}
+                {settings.telemetryMask.mic && !micMuted && (
+                  <span className="text-[#1ed760]">MIC</span>
+                )}
+                {(telemetry.packetLossPct > 2 || telemetry.rttMs > 160) && (
+                  <span className="inline-flex items-center gap-1 text-[#ffb020]">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Unstable connection
+                  </span>
+                )}
+              </div>
+              {settings.telemetryMask.graph && (
+                <div className="flex items-end gap-[2px] h-5 pt-0.5">
+                  {frametimes.map((ft, idx) => (
+                    <span
+                      key={idx}
+                      className="w-1 rounded-t-[1px]"
+                      style={{
+                        height: `${Math.min(100, Math.max(18, (ft / 30) * 100))}%`,
+                        backgroundColor: ft <= 8 ? '#28d250' : ft <= 20 ? '#ffbe28' : '#ff3c3c',
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           ) : (
             <div />
@@ -589,7 +739,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               className={`px-3 py-2 rounded-full text-xs font-semibold border backdrop-blur-md cursor-pointer flex items-center gap-1.5 ${
                 showVirtualPad
                   ? 'bg-[#107c10] border-emerald-400 text-white'
-                  : 'bg-black/65 border-white/15 text-white/90 hover:bg-black/85'
+                  : 'bg-[#181818]/85 border-white/15 text-white/90 hover:bg-black'
               }`}
             >
               <Gamepad2 className="w-4 h-4" />
@@ -598,10 +748,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <button
               type="button"
               onClick={() => setMenuOpen((o) => !o)}
-              className="px-3.5 py-2 rounded-full bg-black/65 hover:bg-black/85 border border-white/15 text-white text-xs font-semibold backdrop-blur-md cursor-pointer flex items-center gap-1.5"
+              className="px-3.5 py-2 rounded-full bg-[#181818]/85 hover:bg-black border border-white/15 text-white text-xs font-semibold backdrop-blur-md cursor-pointer flex items-center gap-1.5"
             >
               <SlidersHorizontal className="w-4 h-4" />
-              Menu
+              Menu (F12)
             </button>
           </div>
         </div>
@@ -747,130 +897,524 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         </div>
       )}
 
-      {/* PSBox In-Game Overlay Menu */}
+      {/* PSBox Left-Side Slide-Over StreamMenu (matching stream_menu.cpp) */}
       {menuOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black/70 backdrop-blur-sm flex items-center justify-end"
-          onClick={() => setMenuOpen(false)}
+          className="fixed inset-0 z-30 bg-black/65 backdrop-blur-sm flex items-stretch justify-start gap-4"
+          onClick={() => {
+            setStatsCustomizing(false);
+            setMenuOpen(false);
+          }}
         >
           <div
-            className="w-full max-w-sm h-full bg-[#12161b] border-l border-white/15 p-6 overflow-y-auto flex flex-col justify-between"
+            className="w-full max-w-[460px] h-full bg-[#141414] border-t-[6px] border-t-[#107c10] flex flex-col justify-between overflow-hidden shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="space-y-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-bold text-white">{t(settings.language, 'gameMenu')}</h3>
-                  <p className="text-xs text-[#9aa4b8] truncate max-w-[230px]">{title}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setMenuOpen(false)}
-                  className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    clientRef.current?.pressNexusButton();
-                    setNexusToast(true);
-                    setTimeout(() => setNexusToast(false), 1400);
-                  }}
-                  className="psbox-btn text-xs"
-                >
-                  <Gamepad2 className="w-4 h-4 text-emerald-400" />
-                  {t(settings.language, 'xboxButton')}
-                </button>
-                <button type="button" onClick={toggleFullscreen} className="psbox-btn text-xs">
-                  {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
-                  {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-                </button>
-                <button type="button" onClick={() => setMuted((m) => !m)} className="psbox-btn text-xs">
-                  {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                  {muted ? 'Unmute' : 'Mute'}
-                </button>
-                <button type="button" onClick={toggleMouseLock} className="psbox-btn text-xs">
-                  <MousePointerClick className="w-4 h-4" />
-                  {mouseCapture ? 'Unlock Mouse' : 'Lock Mouse'}
-                </button>
-              </div>
-
-              <div className="space-y-3 pt-2 border-t border-white/10">
-                <label className="flex items-center justify-between text-sm">
-                  <span>{t(settings.language, 'statistics')}</span>
-                  <input
-                    type="checkbox"
-                    checked={showStats}
-                    onChange={(e) => setShowStats(e.target.checked)}
-                    className="w-4 h-4 accent-[#107c10]"
-                  />
-                </label>
-
-                <label className="flex items-center justify-between text-sm">
-                  <span>{t(settings.language, 'virtualGamepad')}</span>
-                  <input
-                    type="checkbox"
-                    checked={showVirtualPad}
-                    onChange={(e) => setShowVirtualPad(e.target.checked)}
-                    className="w-4 h-4 accent-[#107c10]"
-                  />
-                </label>
-
-                <div>
-                  <div className="text-xs text-[#9aa4b8] mb-1.5">{t(settings.language, 'resolution')}</div>
-                  <select
-                    value={settings.resolution}
-                    onChange={(e) => {
-                      const res = e.target.value as ResolutionMode;
-                      onUpdateSettings({ resolution: res });
-                      const alias =
-                        res === '720p' ? '720' : res === '1080pHQ' ? '1080HQ' : res === '1440p' ? '1440' : '1080';
-                      clientRef.current?.requestResolution(alias);
+            {/* Header + Tabs */}
+            <div className="px-6 pt-5 pb-3 border-b border-white/10 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-2xl font-bold text-white tracking-tight">
+                  {statsCustomizing ? 'Customize indicators' : t(settings.language, 'gameMenu')}
+                </h3>
+                <div className="flex items-center gap-3">
+                  {cloudTimeRemainingSec >= 0 && (
+                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#bebebe]">
+                      <Clock className="w-3.5 h-3.5" />
+                      {Math.floor(cloudTimeRemainingSec / 3600)}h {Math.floor((cloudTimeRemainingSec % 3600) / 60)}m left
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStatsCustomizing(false);
+                      setMenuOpen(false);
                     }}
-                    className="w-full bg-[#1b212c] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center cursor-pointer"
                   >
-                    <option value="720p">720p (Data Saver)</option>
-                    <option value="1080p">1080p (Full HD)</option>
-                    <option value="1080pHQ">1080p HQ (High Bitrate)</option>
-                    <option value="1440p">1440p (QHD Edge Profile)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <div className="text-xs text-[#9aa4b8] mb-1.5">{t(settings.language, 'sharpness')}</div>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {(['off', 'low', 'medium', 'high'] as SharpnessLevel[]).map((lvl) => (
-                      <button
-                        key={lvl}
-                        type="button"
-                        onClick={() => onUpdateSettings({ sharpness: lvl })}
-                        className={`py-1.5 rounded-lg text-xs font-semibold capitalize border cursor-pointer ${
-                          settings.sharpness === lvl
-                            ? 'bg-[#107c10] border-emerald-400 text-white'
-                            : 'bg-white/5 border-white/10 text-[#b4bcc8]'
-                        }`}
-                      >
-                        {lvl}
-                      </button>
-                    ))}
-                  </div>
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
+
+              {!statsCustomizing && (
+                <div className="flex items-center gap-2 text-xs font-semibold">
+                  <span className="px-2 py-0.5 rounded bg-white/15 text-white">L1</span>
+                  {(
+                    [
+                      ['general', 'General'],
+                      ['controls', 'Controllers'],
+                      ['guitar', 'Guitar'],
+                    ] as const
+                  ).map(([id, lbl]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setMenuTab(id)}
+                      className={`px-3 py-1 rounded-md cursor-pointer transition-colors border-b-2 ${
+                        menuTab === id
+                          ? 'bg-white/15 text-white border-[#107c10]'
+                          : 'text-[#8c8c8c] border-transparent hover:text-white'
+                      }`}
+                    >
+                      {lbl}
+                    </button>
+                  ))}
+                  <span className="px-2 py-0.5 rounded bg-white/15 text-white">R1</span>
+                </div>
+              )}
             </div>
 
-            <button
-              type="button"
-              onClick={handleLeave}
-              className="psbox-btn w-full bg-rose-500/20 border-rose-400/40 text-rose-200 hover:bg-rose-500/30 mt-6"
-            >
-              <LogOut className="w-4 h-4" />
-              {t(settings.language, 'leaveGame')}
-            </button>
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-5 py-3 space-y-1.5 text-sm">
+              {statsCustomizing ? (
+                <div className="space-y-1.5">
+                  {(
+                    [
+                      ['fps', 'FPS & Resolution'],
+                      ['bitrate', 'Bitrate'],
+                      ['latency', 'Latency (RTT)'],
+                      ['loss', 'Packet loss'],
+                      ['graph', 'Network jitter graph'],
+                      ['delay', 'Decode & display latency'],
+                      ['qp', 'Video quality (QP)'],
+                      ['mic', 'Microphone status'],
+                    ] as Array<[keyof TelemetryMask, string]>
+                  ).map(([k, lbl]) => {
+                    const active = settings.telemetryMask[k];
+                    return (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() =>
+                          onUpdateSettings({
+                            telemetryMask: { ...settings.telemetryMask, [k]: !active },
+                          })
+                        }
+                        className="w-full px-3.5 py-2.5 rounded-lg bg-white/[0.04] hover:bg-white hover:text-[#141414] flex items-center justify-between cursor-pointer group"
+                      >
+                        <span className="flex items-center gap-3 font-semibold">
+                          <span
+                            className={`w-5 h-5 rounded flex items-center justify-center ${
+                              active ? 'bg-[#107c10] text-white' : 'border border-[#8c8c8c]'
+                            }`}
+                          >
+                            {active && <Check className="w-3.5 h-3.5" />}
+                          </span>
+                          {lbl}
+                        </span>
+                        <span className="text-xs opacity-75">{active ? 'On' : 'Off'}</span>
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => setStatsCustomizing(false)}
+                    className="mt-3 psbox-btn psbox-btn-primary text-xs w-full"
+                  >
+                    Done
+                  </button>
+                </div>
+              ) : menuTab === 'general' ? (
+                <>
+                  <button
+                    type="button"
+                    onMouseEnter={() => setMenuHoverDesc('Opens the Xbox Guide menu or sends the Xbox button to the game.')}
+                    onClick={() => {
+                      clientRef.current?.pressNexusButton();
+                      setNexusToast(true);
+                      setTimeout(() => setNexusToast(false), 1400);
+                    }}
+                    className="w-full px-3.5 py-2 rounded-lg hover:bg-white hover:text-[#141414] flex items-center justify-between font-semibold cursor-pointer"
+                  >
+                    <span>{t(settings.language, 'xboxButton')}</span>
+                    <Gamepad2 className="w-4 h-4 opacity-75" />
+                  </button>
+
+                  <div
+                    onMouseEnter={() => setMenuHoverDesc('Configures and displays performance, network, and latency overlay on screen.')}
+                    className="px-3.5 py-2 rounded-lg hover:bg-white/10 flex items-center justify-between gap-2"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !showStats;
+                        setShowStats(next);
+                        onUpdateSettings({ statsEnabled: next });
+                      }}
+                      className="flex-1 text-left font-semibold cursor-pointer"
+                    >
+                      Statistics: <span className="text-[#bebebe]">{showStats ? 'On' : 'Off'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowStats(true);
+                        setStatsCustomizing(true);
+                      }}
+                      className="px-2.5 py-1 rounded bg-[#181c20] border border-[#16a34a] text-[11px] font-bold text-[#4ade80] cursor-pointer"
+                    >
+                      Customize &gt;
+                    </button>
+                  </div>
+
+                  <div
+                    onMouseEnter={() => setMenuHoverDesc('Applies image upscaling and reconstruction filters such as AMD FSR and Anime4K.')}
+                    className="px-3.5 py-1.5 rounded-lg flex items-center justify-between gap-2"
+                  >
+                    <span className="font-semibold">Upscaling</span>
+                    <select
+                      value={settings.upscaler}
+                      onChange={(e) => onUpdateSettings({ upscaler: e.target.value as UpscalerMode })}
+                      className="bg-[#242424] border border-white/15 rounded px-2 py-1 text-xs text-white"
+                    >
+                      <option value="fsr">FSR</option>
+                      <option value="fsr_clean">FSR + clean-up</option>
+                      <option value="ai">AI (Anime4K)</option>
+                      <option value="ai_clean">AI + clean-up</option>
+                    </select>
+                  </div>
+
+                  <div
+                    onMouseEnter={() => setMenuHoverDesc('Adjusts the intensity of the sharpening filter applied to the video stream.')}
+                    className="px-3.5 py-1.5 rounded-lg flex items-center justify-between gap-2"
+                  >
+                    <span className="font-semibold">{t(settings.language, 'sharpness')}</span>
+                    <select
+                      value={settings.sharpness}
+                      onChange={(e) => onUpdateSettings({ sharpness: e.target.value as SharpnessLevel })}
+                      className="bg-[#242424] border border-white/15 rounded px-2 py-1 text-xs text-white"
+                    >
+                      <option value="off">Off</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+
+                  <div
+                    onMouseEnter={() => setMenuHoverDesc('Reduces banding artifacts and color gradients in dark game scenes.')}
+                    className="px-3.5 py-1.5 rounded-lg flex items-center justify-between gap-2"
+                  >
+                    <span className="font-semibold">Block smoothing</span>
+                    <select
+                      value={settings.deband}
+                      onChange={(e) => onUpdateSettings({ deband: e.target.value as DebandLevel })}
+                      className="bg-[#242424] border border-white/15 rounded px-2 py-1 text-xs text-white"
+                    >
+                      <option value="auto">Auto</option>
+                      <option value="off">Off</option>
+                      <option value="low">Low</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+
+                  <div
+                    onMouseEnter={() => setMenuHoverDesc('Sets the maximum streaming video resolution.')}
+                    className="px-3.5 py-1.5 rounded-lg flex items-center justify-between gap-2"
+                  >
+                    <span className="font-semibold">{t(settings.language, 'resolution')}</span>
+                    <select
+                      value={settings.resolution}
+                      onChange={(e) => {
+                        const res = e.target.value as ResolutionMode;
+                        onUpdateSettings({ resolution: res });
+                        const alias =
+                          res === '720p' ? '720' : res === '1080pHQ' ? '1080HQ' : res === '1440p' ? '1440' : '1080';
+                        clientRef.current?.requestResolution(alias);
+                      }}
+                      className="bg-[#242424] border border-white/15 rounded px-2 py-1 text-xs text-white"
+                    >
+                      <option value="720p">720p</option>
+                      <option value="1080p">1080p</option>
+                      <option value="1080pHQ">1080p HQ</option>
+                      <option value="1440p">Best (1440p)</option>
+                    </select>
+                  </div>
+
+                  <div
+                    onMouseEnter={() => setMenuHoverDesc('Limits the stream presentation framerate to maintain smooth frame pacing.')}
+                    className="px-3.5 py-1.5 rounded-lg flex items-center justify-between gap-2"
+                  >
+                    <span className="font-semibold">FPS Limiter</span>
+                    <select
+                      value={settings.fpsLimit}
+                      onChange={(e) => onUpdateSettings({ fpsLimit: Number(e.target.value) as 0 | 30 | 60 | 120 })}
+                      className="bg-[#242424] border border-white/15 rounded px-2 py-1 text-xs text-white"
+                    >
+                      <option value={0}>Unlimited</option>
+                      <option value={30}>30 fps</option>
+                      <option value={60}>60 fps</option>
+                      <option value={120}>120 fps</option>
+                    </select>
+                  </div>
+
+                  <div
+                    onMouseEnter={() => setMenuHoverDesc('Automatic uses Xbox profile cap; Unlimited removes the app ceiling.')}
+                    className="px-3.5 py-1.5 rounded-lg flex items-center justify-between gap-2"
+                  >
+                    <span className="font-semibold">Maximum bitrate</span>
+                    <select
+                      value={settings.maxBitrateMbps}
+                      onChange={(e) => onUpdateSettings({ maxBitrateMbps: Number(e.target.value) })}
+                      className="bg-[#242424] border border-white/15 rounded px-2 py-1 text-xs text-white"
+                    >
+                      <option value={0}>Automatic</option>
+                      <option value={15}>15 Mbps</option>
+                      <option value={25}>25 Mbps (experimental)</option>
+                      <option value={35}>35 Mbps (experimental)</option>
+                      <option value={50}>50 Mbps (experimental)</option>
+                      <option value={-1}>Unlimited</option>
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-2">
+                    <button type="button" onClick={toggleFullscreen} className="psbox-btn text-xs">
+                      {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+                      {isFullscreen ? 'Window' : 'Fullscreen'}
+                    </button>
+                    <button type="button" onClick={() => setMuted((m) => !m)} className="psbox-btn text-xs">
+                      {muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                      {muted ? 'Unmute' : 'Mute'}
+                    </button>
+                    <button type="button" onClick={toggleMouseLock} className="psbox-btn text-xs">
+                      <MousePointerClick className="w-3.5 h-3.5" />
+                      {mouseCapture ? 'Unlock Mouse' : 'Lock Mouse'}
+                    </button>
+                    <button
+                      type="button"
+                      onMouseEnter={() => setMenuHoverDesc('Re-establishes the WebRTC stream connection without closing your cloud session.')}
+                      onClick={() => setReloadNonce((n) => n + 1)}
+                      className="psbox-btn text-xs"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Reload Stream
+                    </button>
+                  </div>
+                </>
+              ) : menuTab === 'controls' ? (
+                <>
+                  <label className="flex items-center justify-between px-3.5 py-2 rounded-lg hover:bg-white/5">
+                    <span className="font-semibold">Virtual Touch Gamepad</span>
+                    <input
+                      type="checkbox"
+                      checked={showVirtualPad}
+                      onChange={(e) => setShowVirtualPad(e.target.checked)}
+                      className="w-4 h-4 accent-[#107c10]"
+                    />
+                  </label>
+                  <div className="px-3.5 py-1.5 flex items-center justify-between">
+                    <span className="font-semibold">Confirm button</span>
+                    <button
+                      type="button"
+                      onClick={() => onUpdateSettings({ circleConfirms: !settings.circleConfirms })}
+                      className="px-3 py-1 rounded bg-[#242424] text-xs font-bold cursor-pointer"
+                    >
+                      {settings.circleConfirms ? '○' : '×'}
+                    </button>
+                  </div>
+                  <div className="px-3.5 py-1.5 flex items-center justify-between">
+                    <span className="font-semibold">Trigger vibration</span>
+                    <select
+                      value={settings.triggerStrength}
+                      onChange={(e) => onUpdateSettings({ triggerStrength: Number(e.target.value), triggerRumble: Number(e.target.value) > 0 })}
+                      className="bg-[#242424] border border-white/15 rounded px-2 py-1 text-xs text-white"
+                    >
+                      <option value={0}>Off</option>
+                      <option value={1}>Light</option>
+                      <option value={2}>Medium</option>
+                      <option value={3}>Strong</option>
+                      <option value={4}>Max</option>
+                    </select>
+                  </div>
+                  <div className="px-3.5 py-1.5 flex items-center justify-between">
+                    <span className="font-semibold">Audio-to-Haptics</span>
+                    <select
+                      value={settings.audioHaptics}
+                      onChange={(e) => onUpdateSettings({ audioHaptics: Number(e.target.value) as 0 | 1 | 2 | 3 })}
+                      className="bg-[#242424] border border-white/15 rounded px-2 py-1 text-xs text-white"
+                    >
+                      <option value={0}>Off</option>
+                      <option value={1}>Low</option>
+                      <option value={2}>Medium</option>
+                      <option value={3}>High</option>
+                    </select>
+                  </div>
+                  <div className="px-3.5 py-1.5 flex items-center justify-between">
+                    <span className="font-semibold">Stick dead zone ({Math.round(settings.deadzone * 100)}%)</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={0.35}
+                      step={0.01}
+                      value={settings.deadzone}
+                      onChange={(e) => onUpdateSettings({ deadzone: Number(e.target.value) })}
+                      className="w-28 accent-[#107c10]"
+                    />
+                  </div>
+                  <div className="px-3.5 py-1.5 flex items-center justify-between">
+                    <span className="font-semibold">Controller speaker</span>
+                    <span className="text-xs text-[#bebebe]">
+                      {settings.padSpeakerVolume === 0 ? 'Mute' : `${settings.padSpeakerVolume} %`}
+                    </span>
+                  </div>
+                  <div className="px-3.5 py-1.5 flex items-center justify-between">
+                    <span className="font-semibold">Gyro aiming</span>
+                    <select
+                      value={settings.gyroMode}
+                      onChange={(e) => onUpdateSettings({ gyroMode: e.target.value as GyroMode })}
+                      className="bg-[#242424] border border-white/15 rounded px-2 py-1 text-xs text-white"
+                    >
+                      <option value="off">Off</option>
+                      <option value="always">Always</option>
+                      <option value="aiming">While aiming (L2)</option>
+                      <option value="steering">Steering wheel</option>
+                    </select>
+                  </div>
+                </>
+              ) : (
+                /* Guitar Mode Tab (Fortnite Festival) */
+                <div className="space-y-2.5">
+                  <div className="px-3.5 py-1.5 flex items-center justify-between">
+                    <span className="font-semibold">Strum mode</span>
+                    <button
+                      type="button"
+                      onClick={() => setGuitarStrum((v) => !v)}
+                      className="px-3 py-1 rounded bg-[#242424] text-xs font-bold cursor-pointer"
+                    >
+                      {guitarStrum ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                  <div className="px-3.5 py-1.5 flex items-center justify-between">
+                    <span className="font-semibold">Star power by raising</span>
+                    <button
+                      type="button"
+                      onClick={() => setGuitarTilt((v) => !v)}
+                      className="px-3 py-1 rounded bg-[#242424] text-xs font-bold cursor-pointer"
+                    >
+                      {guitarTilt ? 'Normal' : 'Off'}
+                    </button>
+                  </div>
+                  <div className="border-t border-white/10 pt-2 text-[11px] text-[#8c8c8c] px-3.5">
+                    Bind these in Fortnite: Settings &gt; Controller &gt; Fortnite Festival
+                  </div>
+                  {[
+                    { lbl: 'Lane 1 (Green)', color: '#28b446' },
+                    { lbl: 'Lane 2 (Red)', color: '#dc3232' },
+                    { lbl: 'Lane 3 (Yellow)', color: '#ebc828' },
+                    { lbl: 'Lane 4 (Blue)', color: '#286ee6' },
+                    { lbl: 'Lane 5 (Orange)', color: '#f0821e' },
+                    { lbl: 'Overdrive', color: '#50c8e6' },
+                  ].map((lane, idx) => (
+                    <div
+                      key={lane.lbl}
+                      className="px-3.5 py-1.5 flex items-center justify-between rounded-lg bg-white/[0.04]"
+                    >
+                      <span className="flex items-center gap-2.5 text-xs font-semibold">
+                        <span className="w-3.5 h-3.5 rounded-full" style={{ backgroundColor: lane.color }} />
+                        {lane.lbl}
+                      </span>
+                      <select
+                        value={guitarLanes[idx]}
+                        onChange={(e) =>
+                          setGuitarLanes((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))
+                        }
+                        className="bg-[#242424] rounded px-2 py-0.5 text-xs font-bold text-white"
+                      >
+                        {['A', 'B', 'X', 'Y', 'LB', 'RB', 'Back'].map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Bottom 2-Column Live Telemetry + Mic VU + Controller Slots + Leave */}
+            <div className="px-5 py-3 border-t border-white/10 bg-[#141414] space-y-3">
+              {/* 2-Column Connection Stats matching TelemetryOverlay::drawTwoColumnStats */}
+              <div className="grid grid-cols-2 gap-x-5 gap-y-1 text-[11px]">
+                <div className="flex justify-between">
+                  <span className="text-[#8c8c8c]">Region</span>
+                  <span className="font-semibold text-white">{regionName || 'Auto'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#8c8c8c]">Packet loss</span>
+                  <span className="font-semibold text-white">{telemetry.packetLossPct.toFixed(1)} %</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#8c8c8c]">Latency</span>
+                  <span className="font-semibold text-white">{telemetry.rttMs || '-'} ms</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#8c8c8c]">Decoding</span>
+                  <span className="font-semibold text-white">{settings.videoDecoder === 'hw' ? 'HW' : 'SW'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#8c8c8c]">Bitrate</span>
+                  <span className="font-semibold text-white">{telemetry.bitrateMbps.toFixed(1)} Mbps</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#8c8c8c]">Frame rate</span>
+                  <span className="font-semibold text-white">{telemetry.height}p {Math.round(telemetry.fps || 60)} fps</span>
+                </div>
+              </div>
+
+              {/* Microphone + Controller Slots 1..4 */}
+              <div className="pt-2 border-t border-white/10 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {[0, 1, 2, 3].map((slot) => {
+                    const active = slot < connectedPads.length || (slot === 0 && showVirtualPad);
+                    return (
+                      <div
+                        key={slot}
+                        className={`w-9 h-7 rounded-md flex items-center justify-center text-[10px] font-bold border ${
+                          active
+                            ? 'bg-[#242424] border-[#107c10] text-white'
+                            : 'bg-white/[0.03] border-white/10 text-[#666]'
+                        }`}
+                        title={connectedPads[slot] || `Player ${slot + 1}`}
+                      >
+                        P{slot + 1}
+                      </div>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMicMuted((m) => !m)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold cursor-pointer ${
+                    micMuted ? 'bg-amber-500/20 text-amber-300' : 'bg-[#107c10]/30 text-emerald-300'
+                  }`}
+                >
+                  {micMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+                  {micMuted ? 'Muted' : 'Active'}
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleLeave}
+                className="psbox-btn w-full bg-rose-500/20 border-rose-400/40 text-rose-200 hover:bg-rose-500/30 text-xs"
+              >
+                <LogOut className="w-4 h-4" />
+                {isHome ? 'End the stream' : t(settings.language, 'leaveGame')}
+              </button>
+            </div>
           </div>
+
+          {/* Right-Side Floating Description Card matching stream_menu.cpp kCombinedW */}
+          {!statsCustomizing && (
+            <div
+              className="hidden lg:block w-72 h-fit mt-10 bg-[#181818]/95 border border-white/10 rounded-2xl p-4 text-xs text-[#bebebe] leading-relaxed shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="text-white font-bold mb-1">Tip</div>
+              {menuHoverDesc}
+            </div>
+          )}
         </div>
       )}
 
