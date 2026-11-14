@@ -1,67 +1,73 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Activity,
+  Bug,
   Clock,
   Gamepad2,
   HardDrive,
+  Heart,
   Link2,
   LogOut,
   Play,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings as SettingsIcon,
+  ShieldCheck,
   Sliders,
   Sparkles,
   Tv,
   Users,
+  Wifi,
   X,
 } from 'lucide-react';
 import { BrandMark, GamerscoreBadge } from './components/BrandMark';
-import { ControllerTester } from './components/ControllerTester';
+import {
+  ControllerToolsModal,
+  InfoQrModal,
+  NetworkTestModal,
+  SignInCheckModal,
+} from './components/DiagnosticsModals';
 import { GameCard } from './components/GameCard';
 import { GameDetailsModal } from './components/GameDetailsModal';
 import { ButtonGlyph, XboxChassisArtwork } from './components/PlayStationGlyphs';
 import { SignInScreen } from './components/SignInScreen';
 import { StreamPlayer } from './components/StreamPlayer';
+import { DEFAULT_APP_SETTINGS, loadStoredSettings } from './data/psboxDefaults';
 import { LANG_OPTIONS, t, type LangCode } from './i18n/translations';
 import { getRelayUrl, psboxApi, setRelayUrl } from './services/psboxApi';
 import type {
   AppSettings,
   CatalogProduct,
+  DebandLevel,
   GlyphStyle,
   HomeConsole,
   LibraryData,
+  PerGameProfile,
   RegionInfo,
   ResolutionMode,
   SharpnessLevel,
+  UpscalerMode,
   UserProfile,
 } from './types';
 
 type MainTab = 'gamepass' | 'yourgames' | 'consoles' | 'search' | 'settings';
 
-const DEFAULT_SETTINGS: AppSettings = {
-  language: 'en',
-  resolution: '1080p',
-  regionName: '',
-  loginCountry: '',
-  sharpness: 'low',
-  deband: true,
-  deadzone: 0.08,
-  triggerRumble: true,
-  glyphStyle: 'playstation',
-  wishlist: [],
-  hidden: [],
-  playtimeSecByProduct: {},
+const SEARCH_ACRONYMS: Record<string, string> = {
+  cod: 'call of duty',
+  mw: 'modern warfare',
+  bo: 'black ops',
+  bo6: 'black ops 6',
+  gta: 'grand theft auto',
+  rdr: 'red dead',
+  re: 'resident evil',
+  ac: 'assassin',
+  gow: 'gears of war',
+  nfs: 'need for speed',
+  bf: 'battlefield',
+  mk: 'mortal kombat',
+  fh: 'forza horizon',
 };
-
-function loadSettings(): AppSettings {
-  try {
-    const raw = localStorage.getItem('psbox_settings_v1');
-    if (!raw) return DEFAULT_SETTINGS;
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
-  } catch {
-    return DEFAULT_SETTINGS;
-  }
-}
 
 function formatCloudHours(sec: number): string {
   const h = Math.floor(sec / 3600);
@@ -71,7 +77,7 @@ function formatCloudHours(sec: number): string {
 }
 
 export function App() {
-  const [settings, setSettings] = useState<AppSettings>(loadSettings);
+  const [settings, setSettings] = useState<AppSettings>(loadStoredSettings);
   const [booting, setBooting] = useState(true);
   const [signedIn, setSignedIn] = useState(false);
   const [demoMode, setDemoMode] = useState(false);
@@ -93,18 +99,36 @@ export function App() {
   const [filterTouch, setFilterTouch] = useState(false);
   const [filterFree, setFilterFree] = useState(false);
   const [filterWishlist, setFilterWishlist] = useState(false);
+  const [filterConsole, setFilterConsole] = useState<'all' | 'XSX' | 'XB1'>('all');
+  const [filterPlan, setFilterPlan] = useState<number>(0); // 0 = All, 1 = Essential, 2 = Premium, 3 = Ultimate
   const [librarySort, setLibrarySort] = useState<'recent' | 'az' | 'console'>('recent');
   const [selectedGenre, setSelectedGenre] = useState<string>('All');
   const [relayInput, setRelayInput] = useState(() => getRelayUrl());
   const [relaySaved, setRelaySaved] = useState(false);
   const [connectedPads, setConnectedPads] = useState(0);
 
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [signInCheckOpen, setSignInCheckOpen] = useState(false);
+  const [networkTestOpen, setNetworkTestOpen] = useState(false);
+  const [controllerModalTab, setControllerModalTab] = useState<
+    'sticks' | 'triggers' | 'gyro' | 'pad' | 'keys' | 'lightbar' | null
+  >(null);
+  const [infoQrMode, setInfoQrMode] = useState<'report' | 'support' | 'whatsnew' | null>(null);
+
   const [activeStream, setActiveStream] = useState<{
     title: string;
+    heroUrl?: string;
     targetId: string;
     productId?: string;
     isHome: boolean;
   } | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    window.setTimeout(() => {
+      setToastMsg((cur) => (cur === msg ? null : cur));
+    }, 2400);
+  }, []);
 
   // Q / E shoulder-style tab switching (matching PSBox keyboard shortcuts)
   useEffect(() => {
@@ -273,22 +297,46 @@ export function App() {
     return entries;
   }, [visibleProducts]);
 
+  const favoriteGames = useMemo(
+    () =>
+      settings.favorites
+        .map((id) => visibleProducts.find((p) => p.productId === id))
+        .filter((p): p is CatalogProduct => Boolean(p)),
+    [visibleProducts, settings.favorites]
+  );
+
   const searchResults = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const rawQ = searchQuery.trim().toLowerCase();
+    const expandedQ = SEARCH_ACRONYMS[rawQ] ?? rawQ;
     return visibleProducts.filter((p) => {
       if (filterMkb && !p.mouseKeyboard) return false;
       if (filterTouch && !p.touch) return false;
       if (filterFree && !p.isFreeToPlay) return false;
       if (filterWishlist && !settings.wishlist.includes(p.productId)) return false;
+      if (filterConsole !== 'all' && p.platform !== filterConsole) return false;
+      if (filterPlan > 0 && p.plan > filterPlan) return false;
       if (selectedGenre !== 'All' && !p.categories.includes(selectedGenre)) return false;
-      if (!q) return true;
+      if (!rawQ) return true;
+      const tLower = p.title.toLowerCase();
       return (
-        p.title.toLowerCase().includes(q) ||
-        p.publisher.toLowerCase().includes(q) ||
-        p.categories.some((c) => c.toLowerCase().includes(q))
+        tLower.includes(rawQ) ||
+        tLower.includes(expandedQ) ||
+        p.publisher.toLowerCase().includes(rawQ) ||
+        p.categories.some((c) => c.toLowerCase().includes(rawQ))
       );
     });
-  }, [visibleProducts, searchQuery, filterMkb, filterTouch, filterFree, filterWishlist, selectedGenre, settings.wishlist]);
+  }, [
+    visibleProducts,
+    searchQuery,
+    filterMkb,
+    filterTouch,
+    filterFree,
+    filterWishlist,
+    filterConsole,
+    filterPlan,
+    selectedGenre,
+    settings.wishlist,
+  ]);
 
   const sortedOwnedGames = useMemo(() => {
     const list = [...ownedGames];
@@ -304,6 +352,17 @@ export function App() {
         ? settings.wishlist.filter((id) => id !== productId)
         : [productId, ...settings.wishlist],
     });
+    showToast(exists ? 'Removed from wishlist' : 'Added to wishlist');
+  };
+
+  const toggleFavorite = (productId: string) => {
+    const exists = settings.favorites.includes(productId);
+    updateSettings({
+      favorites: exists
+        ? settings.favorites.filter((id) => id !== productId)
+        : [productId, ...settings.favorites],
+    });
+    showToast(exists ? 'Removed from favourites' : 'Added to favourites');
   };
 
   const toggleHidden = (productId: string) => {
@@ -311,12 +370,22 @@ export function App() {
     updateSettings({
       hidden: exists ? settings.hidden.filter((id) => id !== productId) : [...settings.hidden, productId],
     });
+    showToast(exists ? 'Shown again' : 'Hidden: find it under Hidden, at the end of Your games');
+  };
+
+  const saveGameProfile = (productId: string, prof: PerGameProfile | null) => {
+    const next = { ...settings.perGameSettings };
+    if (prof) next[productId] = prof;
+    else delete next[productId];
+    updateSettings({ perGameSettings: next });
+    showToast(prof ? 'Game settings saved' : 'Game settings reset to default');
   };
 
   const launchGame = (p: CatalogProduct) => {
     setDetailsProduct(null);
     setActiveStream({
       title: p.title,
+      heroUrl: p.heroUrl || p.posterUrl || p.tileUrl,
       targetId: p.xcloudTitleId || p.productId,
       productId: p.productId,
       isHome: false,
@@ -727,6 +796,7 @@ export function App() {
             {selectedGenre === 'All' ? (
               <div className="space-y-7">
                 {renderRow(t(settings.language, 'jumpBackIn'), recentGames)}
+                {renderRow('Favourites', favoriteGames)}
                 {renderRow(t(settings.language, 'wishlist'), wishlistGames)}
                 {renderRow(t(settings.language, 'mostPopular'), popularGames)}
                 {renderRow(t(settings.language, 'recentlyAdded'), addedGames)}
@@ -1009,16 +1079,38 @@ export function App() {
                 </button>
               </div>
 
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={selectedGenre}
+                  onChange={(e) => setSelectedGenre(e.target.value)}
+                  className="bg-[#242424] border border-white/10 rounded-xl px-3 py-2.5 text-xs font-semibold text-white outline-none"
+                >
+                  {availableGenres.map((g) => (
+                    <option key={g} value={g}>
+                      Genre: {g}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={filterConsole}
+                  onChange={(e) => setFilterConsole(e.target.value as 'all' | 'XSX' | 'XB1')}
+                  className="bg-[#242424] border border-white/10 rounded-xl px-3 py-2.5 text-xs font-semibold text-white outline-none"
+                >
+                  <option value="all">Console: All</option>
+                  <option value="XSX">Xbox Series X|S</option>
+                  <option value="XB1">Xbox One</option>
+                </select>
+              </div>
+
               <select
-                value={selectedGenre}
-                onChange={(e) => setSelectedGenre(e.target.value)}
-                className="w-full bg-[#242424] border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none"
+                value={filterPlan}
+                onChange={(e) => setFilterPlan(Number(e.target.value))}
+                className="w-full bg-[#242424] border border-white/10 rounded-xl px-3.5 py-2.5 text-xs font-semibold text-white outline-none"
               >
-                {availableGenres.map((g) => (
-                  <option key={g} value={g}>
-                    Genre: {g}
-                  </option>
-                ))}
+                <option value={0}>Plan: All plans</option>
+                <option value={1}>Game Pass Essential</option>
+                <option value={2}>Game Pass Premium</option>
+                <option value={3}>Game Pass Ultimate</option>
               </select>
             </div>
 
@@ -1044,16 +1136,33 @@ export function App() {
           </div>
         )}
 
-        {/* SETTINGS TAB */}
+        {/* SETTINGS TAB (Full PSBox Settings Parity) */}
         {tab === 'settings' && (
-          <div className="pt-8 max-w-4xl space-y-6">
-            <div className="flex items-center gap-2.5">
-              <Sliders className="w-6 h-6 text-[#107c10]" />
-              <h2 className="text-2xl font-bold text-white">{t(settings.language, 'settings')}</h2>
+          <div className="pt-8 max-w-5xl space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <Sliders className="w-6 h-6 text-[#107c10]" />
+                <h2 className="text-2xl font-bold text-white">{t(settings.language, 'settings')}</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  updateSettings(DEFAULT_APP_SETTINGS);
+                  showToast('Settings restored to factory defaults.');
+                }}
+                className="psbox-btn text-xs"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Restore default settings
+              </button>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* Column 1: Display, Video & Stream Quality */}
               <div className="bg-[#242424] rounded-2xl p-5 space-y-4">
+                <h3 className="text-sm font-bold text-white border-b border-white/10 pb-2">
+                  Display, Video &amp; Stream Quality
+                </h3>
                 <div>
                   <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
                     {t(settings.language, 'language')}
@@ -1061,7 +1170,7 @@ export function App() {
                   <select
                     value={settings.language}
                     onChange={(e) => updateSettings({ language: e.target.value as LangCode })}
-                    className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white"
+                    className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
                   >
                     {LANG_OPTIONS.map((l) => (
                       <option key={l.code} value={l.code}>
@@ -1073,52 +1182,135 @@ export function App() {
 
                 <div>
                   <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
-                    Button Glyphs
-                  </label>
-                  <select
-                    value={glyphStyle}
-                    onChange={(e) => updateSettings({ glyphStyle: e.target.value as GlyphStyle })}
-                    className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white"
-                  >
-                    <option value="playstation">PlayStation (✕ ○ □ △)</option>
-                    <option value="xbox">Xbox (A B X Y)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
                     {t(settings.language, 'resolution')}
                   </label>
                   <select
                     value={settings.resolution}
                     onChange={(e) => updateSettings({ resolution: e.target.value as ResolutionMode })}
-                    className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white"
+                    className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
                   >
-                    <option value="720p">720p (Android profile, lower data)</option>
+                    <option value="720p">720p (uses less data)</option>
                     <option value="1080p">1080p (Full HD)</option>
-                    <option value="1080pHQ">1080p HQ (Tizen 4K high bitrate)</option>
-                    <option value="1440p">1440p (Edge QHD, Ultimate)</option>
+                    <option value="1080pHQ">1080p HQ (High Bitrate)</option>
+                    <option value="1440p">Best (1440p Auto)</option>
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
-                    {t(settings.language, 'sharpness')}
-                  </label>
-                  <select
-                    value={settings.sharpness}
-                    onChange={(e) => updateSettings({ sharpness: e.target.value as SharpnessLevel })}
-                    className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white"
-                  >
-                    <option value="off">Off</option>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                  </select>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      Maximum bitrate
+                    </label>
+                    <select
+                      value={settings.maxBitrateMbps}
+                      onChange={(e) => updateSettings({ maxBitrateMbps: Number(e.target.value) })}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value={0}>Automatic</option>
+                      <option value={15}>15 Mbps</option>
+                      <option value={25}>25 Mbps (exp)</option>
+                      <option value={35}>35 Mbps (exp)</option>
+                      <option value={50}>50 Mbps (exp)</option>
+                      <option value={-1}>Unlimited</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      FPS Limiter
+                    </label>
+                    <select
+                      value={settings.fpsLimit}
+                      onChange={(e) => updateSettings({ fpsLimit: Number(e.target.value) as 0 | 30 | 60 | 120 })}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value={0}>Unlimited</option>
+                      <option value={30}>30 FPS</option>
+                      <option value={60}>60 FPS</option>
+                      <option value={120}>120 FPS</option>
+                    </select>
+                  </div>
                 </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      Upscaling
+                    </label>
+                    <select
+                      value={settings.upscaler}
+                      onChange={(e) => updateSettings({ upscaler: e.target.value as UpscalerMode })}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value="fsr">FSR</option>
+                      <option value="fsr_clean">FSR + clean-up</option>
+                      <option value="ai">AI (Anime4K)</option>
+                      <option value="ai_clean">AI + clean-up</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      {t(settings.language, 'sharpness')}
+                    </label>
+                    <select
+                      value={settings.sharpness}
+                      onChange={(e) => updateSettings({ sharpness: e.target.value as SharpnessLevel })}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value="off">Off</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      Block smoothing
+                    </label>
+                    <select
+                      value={settings.deband}
+                      onChange={(e) => updateSettings({ deband: e.target.value as DebandLevel })}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value="auto">Auto</option>
+                      <option value="off">Off</option>
+                      <option value="low">Low</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      Video Decoder
+                    </label>
+                    <select
+                      value={settings.videoDecoder}
+                      onChange={(e) => updateSettings({ videoDecoder: e.target.value as 'hw' | 'sw' })}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value="hw">Hardware (Recommended)</option>
+                      <option value="sw">Software (CPU)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <label className="flex items-center justify-between text-sm text-white pt-1">
+                  <span>120 Hz output (VRR)</span>
+                  <input
+                    type="checkbox"
+                    checked={settings.highRefresh}
+                    onChange={(e) => updateSettings({ highRefresh: e.target.checked })}
+                    className="w-4 h-4 accent-[#107c10]"
+                  />
+                </label>
               </div>
 
+              {/* Column 2: Region, Audio, Glyphs & Alerts */}
               <div className="bg-[#242424] rounded-2xl p-5 space-y-4">
+                <h3 className="text-sm font-bold text-white border-b border-white/10 pb-2">
+                  Region, Audio &amp; Controls
+                </h3>
                 <div>
                   <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
                     {t(settings.language, 'region')}
@@ -1130,7 +1322,7 @@ export function App() {
                       setSelectedRegion(val);
                       await psboxApi.updateRegion(val).catch(() => {});
                     }}
-                    className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white"
+                    className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
                   >
                     {regions.map((r) => (
                       <option key={r.name} value={r.name}>
@@ -1140,40 +1332,214 @@ export function App() {
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
-                    {t(settings.language, 'countryBypass')}
-                  </label>
-                  <select
-                    value={settings.loginCountry}
-                    onChange={async (e) => {
-                      const val = e.target.value;
-                      updateSettings({ loginCountry: val });
-                      await psboxApi.updateRegion(undefined, val).catch(() => {});
-                    }}
-                    className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white"
-                  >
-                    <option value="">None</option>
-                    <option value="us">United States (US)</option>
-                    <option value="br">Brazil (BR)</option>
-                    <option value="jp">Japan (JP)</option>
-                    <option value="kr">South Korea (KR)</option>
-                    <option value="pl">Poland (PL)</option>
-                  </select>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      {t(settings.language, 'countryBypass')}
+                    </label>
+                    <select
+                      value={settings.loginCountry}
+                      onChange={async (e) => {
+                        const val = e.target.value;
+                        updateSettings({ loginCountry: val });
+                        await psboxApi.updateRegion(undefined, val).catch(() => {});
+                      }}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value="">Off</option>
+                      <option value="us">United States (US)</option>
+                      <option value="br">Brazil (BR)</option>
+                      <option value="jp">Japan (JP)</option>
+                      <option value="kr">South Korea (KR)</option>
+                      <option value="pl">Poland (PL)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      Store country
+                    </label>
+                    <select
+                      value={settings.storeCountry}
+                      onChange={(e) => updateSettings({ storeCountry: e.target.value })}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value="">Auto</option>
+                      <option value="US">United States (US)</option>
+                      <option value="BR">Brazil (BR)</option>
+                      <option value="GB">United Kingdom (GB)</option>
+                      <option value="JP">Japan (JP)</option>
+                    </select>
+                  </div>
                 </div>
 
-                <label className="flex items-center justify-between pt-2 text-sm text-white">
-                  <span>Controller Rumble / Vibration</span>
-                  <input
-                    type="checkbox"
-                    checked={settings.triggerRumble}
-                    onChange={(e) => updateSettings({ triggerRumble: e.target.checked })}
-                    className="w-4 h-4 accent-[#107c10]"
-                  />
-                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      Button Glyphs
+                    </label>
+                    <select
+                      value={glyphStyle}
+                      onChange={(e) => updateSettings({ glyphStyle: e.target.value as GlyphStyle })}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value="playstation">PlayStation (✕ ○ □ △)</option>
+                      <option value="xbox">Xbox (A B X Y)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      Confirm button
+                    </label>
+                    <select
+                      value={settings.circleConfirms ? 'circle' : 'cross'}
+                      onChange={(e) => updateSettings({ circleConfirms: e.target.value === 'circle' })}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value="cross">Cross / A (Western)</option>
+                      <option value="circle">Circle / B (Japanese)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      Game volume ({settings.gameVolume}%)
+                    </label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={settings.gameVolume}
+                      onChange={(e) => updateSettings({ gameVolume: Number(e.target.value) })}
+                      className="w-full accent-[#107c10]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#8c8c8c] uppercase mb-1.5">
+                      Audio-to-Haptics
+                    </label>
+                    <select
+                      value={settings.audioHaptics}
+                      onChange={(e) => updateSettings({ audioHaptics: Number(e.target.value) as 0 | 1 | 2 | 3 })}
+                      className="w-full bg-[#0e0e0e] border border-white/15 rounded-xl px-3 py-2 text-sm text-white"
+                    >
+                      <option value={0}>Off</option>
+                      <option value={1}>Low</option>
+                      <option value={2}>Medium</option>
+                      <option value={3}>High</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-1 text-sm text-white">
+                  <label className="flex items-center justify-between">
+                    <span>Controller Rumble / Trigger Vibration</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.triggerRumble}
+                      onChange={(e) => updateSettings({ triggerRumble: e.target.checked })}
+                      className="w-4 h-4 accent-[#107c10]"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between">
+                    <span>Queue ready chime</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.queueReadyAlert}
+                      onChange={(e) => updateSettings({ queueReadyAlert: e.target.checked })}
+                      className="w-4 h-4 accent-[#107c10]"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between">
+                    <span>Preview features (xCloud F2P)</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.previewFeatures}
+                      onChange={(e) => updateSettings({ previewFeatures: e.target.checked })}
+                      className="w-4 h-4 accent-[#107c10]"
+                    />
+                  </label>
+                </div>
               </div>
             </div>
 
+            {/* Controller & Input Studio Launchers (matches PSBox Stick/Trigger/Gyro/Pad/Keys/Lightbar testers) */}
+            <div className="bg-[#242424] rounded-2xl p-5 space-y-3">
+              <h3 className="text-sm font-bold text-white">Controller &amp; Input Calibration Studio</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                {(
+                  [
+                    ['sticks', 'Stick Deadzone'],
+                    ['triggers', 'Trigger Feel'],
+                    ['gyro', 'Gyro Aiming'],
+                    ['pad', 'Pad & Touchpad'],
+                    ['keys', 'Keyboard Keys'],
+                    ['lightbar', 'Light Bar'],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setControllerModalTab(key)}
+                    className="px-3 py-3 rounded-xl bg-[#0e0e0e]/70 hover:bg-white hover:text-[#0e0e0e] text-xs font-semibold text-white flex flex-col items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Gamepad2 className="w-4 h-4 text-[#107c10]" />
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Diagnostics, Support & What's New (matches PSBox Sign-In Check, Network Test, Bug Report, Ko-fi) */}
+            <div className="bg-[#242424] rounded-2xl p-5 space-y-3">
+              <h3 className="text-sm font-bold text-white">Diagnostics, Support &amp; Updates</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setSignInCheckOpen(true)}
+                  className="psbox-btn text-xs"
+                >
+                  <ShieldCheck className="w-4 h-4 text-[#107c10]" />
+                  Check my sign-in
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNetworkTestOpen(true)}
+                  className="psbox-btn text-xs"
+                >
+                  <Wifi className="w-4 h-4 text-[#107c10]" />
+                  Network test
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInfoQrMode('report')}
+                  className="psbox-btn text-xs"
+                >
+                  <Bug className="w-4 h-4 text-amber-400" />
+                  Report a problem
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInfoQrMode('support')}
+                  className="psbox-btn text-xs"
+                >
+                  <Heart className="w-4 h-4 text-rose-400" />
+                  Support (Ko-fi)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInfoQrMode('whatsnew')}
+                  className="psbox-btn text-xs"
+                >
+                  <Activity className="w-4 h-4 text-sky-400" />
+                  What&apos;s New
+                </button>
+              </div>
+            </div>
+
+            {/* Cloudflare Worker Relay */}
             <div className="bg-[#242424] rounded-2xl p-5 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-sm font-bold text-white">
@@ -1215,11 +1581,6 @@ export function App() {
                 </button>
               </form>
             </div>
-
-            <ControllerTester
-              deadzone={settings.deadzone}
-              onDeadzoneChange={(dz) => updateSettings({ deadzone: dz })}
-            />
           </div>
         )}
       </main>
@@ -1293,32 +1654,67 @@ export function App() {
         })}
       </nav>
 
+      {/* Toast Notification matching PSBox ToastView */}
+      {toastMsg && (
+        <div className="fixed bottom-20 sm:bottom-16 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 rounded-full bg-[#242424] border border-white/20 text-white text-sm font-semibold shadow-2xl">
+          {toastMsg}
+        </div>
+      )}
+
       {/* Details Modal */}
       {detailsProduct && (
         <GameDetailsModal
           lang={settings.language}
           product={detailsProduct}
+          settings={settings}
           wishlisted={settings.wishlist.includes(detailsProduct.productId)}
+          favorited={settings.favorites.includes(detailsProduct.productId)}
           hidden={settings.hidden.includes(detailsProduct.productId)}
           glyphStyle={glyphStyle}
+          playtimeSec={settings.playtimeSecByProduct[detailsProduct.productId] ?? 0}
           onToggleWishlist={() => toggleWishlist(detailsProduct.productId)}
+          onToggleFavorite={() => toggleFavorite(detailsProduct.productId)}
           onToggleHidden={() => {
             toggleHidden(detailsProduct.productId);
             setDetailsProduct(null);
           }}
+          onSaveGameProfile={(prof) => saveGameProfile(detailsProduct.productId, prof)}
           onPlay={() => launchGame(detailsProduct)}
           onClose={() => setDetailsProduct(null)}
         />
       )}
 
+      {/* Diagnostics & Controller Studio Modals */}
+      {signInCheckOpen && profile && (
+        <SignInCheckModal
+          demoMode={demoMode}
+          gamertag={profile.gamertag}
+          subscription={profile.subscription || 'FREE'}
+          previewFeatures={settings.previewFeatures}
+          onClose={() => setSignInCheckOpen(false)}
+        />
+      )}
+      {networkTestOpen && <NetworkTestModal onClose={() => setNetworkTestOpen(false)} />}
+      {controllerModalTab && (
+        <ControllerToolsModal
+          initialTab={controllerModalTab}
+          settings={settings}
+          onUpdateSettings={updateSettings}
+          onClose={() => setControllerModalTab(null)}
+        />
+      )}
+      {infoQrMode && <InfoQrModal mode={infoQrMode} onClose={() => setInfoQrMode(null)} />}
+
       {/* Fullscreen Stream Player */}
       {activeStream && (
         <StreamPlayer
           title={activeStream.title}
+          heroUrl={activeStream.heroUrl}
           targetId={activeStream.targetId}
           isHome={activeStream.isHome}
           demoMode={demoMode}
           regionName={selectedRegion}
+          cloudTimeRemainingSec={profile?.playtimeRemainingSec ?? -1}
           settings={settings}
           onUpdateSettings={updateSettings}
           onExit={(elapsedSec) => {

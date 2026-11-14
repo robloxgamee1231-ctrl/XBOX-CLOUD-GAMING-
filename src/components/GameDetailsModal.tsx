@@ -1,20 +1,28 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { ExternalLink, Eye, EyeOff, Lock, Play, ShoppingBag, Star, X } from 'lucide-react';
+import { ExternalLink, Eye, EyeOff, Heart, Lock, Play, ShoppingBag, Sliders, Star, X } from 'lucide-react';
 import { makePosterFallbackUri } from '../data/demoCatalog';
+import { getProductAchievements } from '../data/psboxDefaults';
 import { t, type LangCode } from '../i18n/translations';
-import type { CatalogProduct, GlyphStyle } from '../types';
+import type { AppSettings, CatalogProduct, GlyphStyle, PerGameProfile } from '../types';
+import { AchievementsModal } from './AchievementsModal';
+import { GamerscoreBadge } from './BrandMark';
+import { PerGameSettingsModal } from './PerGameSettingsModal';
 import { ButtonGlyph } from './PlayStationGlyphs';
 
 interface GameDetailsModalProps {
   lang: LangCode;
   product: CatalogProduct;
+  settings: AppSettings;
   wishlisted: boolean;
+  favorited: boolean;
   hidden: boolean;
   glyphStyle?: GlyphStyle;
   playtimeSec?: number;
   onToggleWishlist: () => void;
+  onToggleFavorite: () => void;
   onToggleHidden: () => void;
+  onSaveGameProfile: (profile: PerGameProfile | null) => void;
   onPlay: () => void;
   onClose: () => void;
 }
@@ -39,18 +47,29 @@ function planName(plan: 0 | 1 | 2 | 3): string | null {
 export const GameDetailsModal: React.FC<GameDetailsModalProps> = ({
   lang,
   product,
+  settings,
   wishlisted,
+  favorited,
   hidden,
   glyphStyle = 'playstation',
   playtimeSec = 0,
   onToggleWishlist,
+  onToggleFavorite,
   onToggleHidden,
+  onSaveGameProfile,
   onPlay,
   onClose,
 }) => {
   const storeUrl = `https://www.xbox.com/games/store/p/${product.productId}`;
   const [storeQr, setStoreQr] = useState('');
+  const [achOpen, setAchOpen] = useState(false);
+  const [gameSettingsOpen, setGameSettingsOpen] = useState(false);
   const showBuyQr = !product.playable && product.purchasable && !product.isFreeToPlay;
+  const achItems = getProductAchievements(product);
+  const achUnlocked = achItems.filter((a) => a.unlocked).length;
+  const achGs = achItems.filter((a) => a.unlocked).reduce((s, a) => s + a.gamerscore, 0);
+  const achTotalGs = achItems.reduce((s, a) => s + a.gamerscore, 0);
+  const hasCustomProfile = Boolean(settings.perGameSettings[product.productId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -122,7 +141,31 @@ export const GameDetailsModal: React.FC<GameDetailsModalProps> = ({
           Back
         </button>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setGameSettingsOpen(true)}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold cursor-pointer border transition-colors ${
+              hasCustomProfile
+                ? 'bg-[#107c10] border-emerald-400 text-white'
+                : 'bg-[#242424]/90 border-white/10 text-[#bebebe] hover:text-white'
+            }`}
+          >
+            <Sliders className="w-3.5 h-3.5" />
+            {hasCustomProfile ? 'Game Settings (Custom)' : 'Game Settings'}
+          </button>
+          <button
+            type="button"
+            onClick={onToggleFavorite}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold cursor-pointer border transition-colors ${
+              favorited
+                ? 'bg-rose-500/20 border-rose-400/60 text-rose-200'
+                : 'bg-[#242424]/90 border-white/10 text-[#bebebe] hover:text-white'
+            }`}
+          >
+            <Heart className={`w-3.5 h-3.5 ${favorited ? 'fill-rose-400 text-rose-400' : ''}`} />
+            {favorited ? 'Favourited' : 'Favourite'}
+          </button>
           <button
             type="button"
             onClick={onToggleWishlist}
@@ -226,6 +269,18 @@ export const GameDetailsModal: React.FC<GameDetailsModalProps> = ({
               </div>
             )}
 
+            {/* Achievements Button matching PSBox drawDetails */}
+            <button
+              type="button"
+              onClick={() => setAchOpen(true)}
+              className="inline-flex items-center gap-2.5 px-6 py-4 rounded-full bg-white/15 hover:bg-white/25 text-white font-semibold text-sm sm:text-base cursor-pointer transition-colors"
+            >
+              <GamerscoreBadge size={16} />
+              <span>
+                {achUnlocked}/{achItems.length} ({achGs}/{achTotalGs} G)
+              </span>
+            </button>
+
             <a
               href={storeUrl}
               target="_blank"
@@ -269,26 +324,52 @@ export const GameDetailsModal: React.FC<GameDetailsModalProps> = ({
       </div>
 
       {/* Bottom PlayStation Hints Bar */}
-      <div className="hidden sm:flex relative z-10 max-w-[1600px] w-full mx-auto px-14 pb-6 items-center justify-end gap-7 text-sm font-semibold text-[#bebebe]">
+      <div className="hidden sm:flex relative z-10 max-w-[1600px] w-full mx-auto px-14 pb-6 items-center justify-end gap-6 text-sm font-semibold text-[#bebebe]">
         {product.playable || product.isFreeToPlay ? (
           <button type="button" onClick={onPlay} className="inline-flex items-center gap-2 hover:text-white cursor-pointer">
             <ButtonGlyph icon="cross" style={glyphStyle} />
             <span>Play</span>
           </button>
         ) : null}
-        <button type="button" onClick={onToggleWishlist} className="inline-flex items-center gap-2 hover:text-white cursor-pointer">
+        <button type="button" onClick={() => setGameSettingsOpen(true)} className="inline-flex items-center gap-2 hover:text-white cursor-pointer">
+          <ButtonGlyph icon="options" style={glyphStyle} />
+          <span>Game settings</span>
+        </button>
+        <button type="button" onClick={onToggleFavorite} className="inline-flex items-center gap-2 hover:text-white cursor-pointer">
           <ButtonGlyph icon="triangle" style={glyphStyle} />
-          <span>{wishlisted ? 'Remove wishlist' : 'Add to wishlist'}</span>
+          <span>{favorited ? 'Remove favourite' : 'Add to favourites'}</span>
         </button>
         <button type="button" onClick={onToggleHidden} className="inline-flex items-center gap-2 hover:text-white cursor-pointer">
           <ButtonGlyph icon="square" style={glyphStyle} />
           <span>{hidden ? 'Unhide' : 'Hide'}</span>
+        </button>
+        <button type="button" onClick={onToggleWishlist} className="inline-flex items-center gap-2 hover:text-white cursor-pointer">
+          <ButtonGlyph icon="r3" style={glyphStyle} />
+          <span>{wishlisted ? 'Remove wishlist' : 'Add to wishlist'}</span>
         </button>
         <button type="button" onClick={onClose} className="inline-flex items-center gap-2 hover:text-white cursor-pointer">
           <ButtonGlyph icon="circle" style={glyphStyle} />
           <span>Back</span>
         </button>
       </div>
+
+      {achOpen && (
+        <AchievementsModal
+          product={product}
+          glyphStyle={glyphStyle}
+          onClose={() => setAchOpen(false)}
+        />
+      )}
+
+      {gameSettingsOpen && (
+        <PerGameSettingsModal
+          product={product}
+          settings={settings}
+          glyphStyle={glyphStyle}
+          onSaveProfile={onSaveGameProfile}
+          onClose={() => setGameSettingsOpen(false)}
+        />
+      )}
     </div>
   );
 };
