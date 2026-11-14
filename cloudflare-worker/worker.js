@@ -18,16 +18,17 @@ function isAllowedHost(hostname) {
   return (
     ALLOWED_HOSTS.has(hostname) ||
     hostname.endsWith('.gssv-play-prod.xboxlive.com') ||
-    hostname.endsWith('.xboxlive.com')
+    hostname.endsWith('.xboxlive.com') ||
+    hostname.endsWith('.xboxservices.com')
   );
 }
 
 function corsHeaders(origin) {
   return {
     'Access-Control-Allow-Origin': origin || '*',
-    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers':
-      'Content-Type, Authorization, x-xbl-contract-version, x-gssv-client, X-MS-Device-Info, X-PSBox-Country, calling-app-name, calling-app-version, ms-cv',
+      'Content-Type, Authorization, x-xbl-contract-version, x-gssv-client, X-MS-Device-Info, X-PSBox-Country, calling-app-name, calling-app-version, calling-app-context, ms-cv, Accept-Language, Cache-Control, Pragma',
     'Access-Control-Max-Age': '86400',
   };
 }
@@ -69,8 +70,11 @@ export default {
         lower === 'x-ms-device-info' ||
         lower === 'calling-app-name' ||
         lower === 'calling-app-version' ||
+        lower === 'calling-app-context' ||
         lower === 'ms-cv' ||
-        lower === 'accept-language'
+        lower === 'accept-language' ||
+        lower === 'cache-control' ||
+        lower === 'pragma'
       ) {
         fwdHeaders.set(k, v);
       }

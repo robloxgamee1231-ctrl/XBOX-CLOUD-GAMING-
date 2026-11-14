@@ -1,6 +1,6 @@
 import React from 'react';
 import { Gamepad2, Keyboard, Lock, ShoppingBag, Star } from 'lucide-react';
-import { makePosterFallbackUri } from '../data/demoCatalog';
+import { makePosterFallbackUri } from '../utils/posterFallback';
 import type { CatalogProduct } from '../types';
 
 interface GameCardProps {

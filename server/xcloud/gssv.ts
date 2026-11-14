@@ -17,7 +17,7 @@ export interface GssvSessionLogin {
   expiresAt: number;
   regions: RegionInfo[];
   selectedRegion: RegionInfo;
-  offering: 'xgpuweb' | 'xhome';
+  offering: 'xgpuweb' | 'xgpuwebf2p' | 'xhome';
 }
 
 export interface CloudTitle {
@@ -155,7 +155,7 @@ function authedHeaders(gsToken: string, resolution: ResolutionMode, hasBody = fa
 
 export async function gssvLogin(
   gssvXstsToken: string,
-  offering: 'xgpuweb' | 'xhome' = 'xgpuweb',
+  offering: 'xgpuweb' | 'xgpuwebf2p' | 'xhome' = 'xgpuweb',
   loginCountry = '',
 ): Promise<GssvSessionLogin> {
   const headers: Record<string, string> = {

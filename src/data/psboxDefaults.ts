@@ -90,13 +90,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     mic: false,
   },
   perGameSettings: {},
-  wishlist: ['9N431PX143P8', 'BX3M8L83BBRW'],
-  favorites: ['BT5P2X999VH2', '9PP5G1F0C2B6'],
+  wishlist: [],
+  favorites: [],
   hidden: [],
-  playtimeSecByProduct: {
-    BT5P2X999VH2: 6420,
-    '9PP5G1F0C2B6': 3900,
-  },
+  playtimeSecByProduct: {},
 };
 
 export function loadStoredSettings(): AppSettings {
@@ -149,49 +146,3 @@ export const PSBOX_LAUNCH_TIPS: string[] = [
   'Press F12 or START + BACK during gameplay to adjust volume, bitrate, and stream settings',
   'Queue Ready Chime plays an audio alert the moment your cloud slot opens',
 ];
-
-export function getProductAchievements(product: CatalogProduct): AchievementItem[] {
-  const hash = product.productId.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-  const title = product.title;
-  return [
-    {
-      id: `${product.productId}-1`,
-      name: `First Steps in ${title}`,
-      description: 'Launch and complete the opening mission or first match.',
-      gamerscore: 15,
-      unlocked: hash % 3 !== 0,
-      unlockedAt: 'Unlocked 2 days ago',
-    },
-    {
-      id: `${product.productId}-2`,
-      name: 'Cloud Explorer',
-      description: 'Reach your first milestone or unlock a major progression tier.',
-      gamerscore: 30,
-      unlocked: hash % 2 === 0,
-      unlockedAt: 'Unlocked yesterday',
-    },
-    {
-      id: `${product.productId}-3`,
-      name: 'Seasoned Veteran',
-      description: 'Win 10 challenges or defeat a chapter boss on Normal or higher.',
-      gamerscore: 50,
-      unlocked: hash % 5 === 0,
-    },
-    {
-      id: `${product.productId}-4`,
-      name: 'Squad Goals',
-      description: 'Complete an objective with friends or online co-op.',
-      gamerscore: 25,
-      unlocked: false,
-      lockedDescription: 'Join a multiplayer or co-op session to earn this.',
-    },
-    {
-      id: `${product.productId}-5`,
-      name: 'Hidden Legend',
-      description: 'Discover the secret encounter hidden off the main path.',
-      gamerscore: 100,
-      unlocked: false,
-      isSecret: true,
-    },
-  ];
-}

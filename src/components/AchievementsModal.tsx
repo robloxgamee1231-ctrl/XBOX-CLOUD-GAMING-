@@ -1,7 +1,7 @@
-import React from 'react';
-import { Check, Lock, X } from 'lucide-react';
-import { getProductAchievements } from '../data/psboxDefaults';
-import type { CatalogProduct, GlyphStyle } from '../types';
+import React, { useEffect, useState } from 'react';
+import { Check, Lock, RefreshCw, X } from 'lucide-react';
+import { psboxApi } from '../services/psboxApi';
+import type { AchievementItem, CatalogProduct, GlyphStyle } from '../types';
 import { GamerscoreBadge } from './BrandMark';
 import { ButtonGlyph } from './PlayStationGlyphs';
 
@@ -16,7 +16,28 @@ export const AchievementsModal: React.FC<AchievementsModalProps> = ({
   glyphStyle = 'playstation',
   onClose,
 }) => {
-  const items = getProductAchievements(product);
+  const [items, setItems] = useState<AchievementItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    psboxApi
+      .getAchievements(product.xboxTitleId)
+      .then((res) => {
+        if (active) setItems(res);
+      })
+      .catch(() => {
+        if (active) setItems([]);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [product.xboxTitleId]);
+
   const unlockedCount = items.filter((a) => a.unlocked).length;
   const totalCount = items.length;
   const unlockedGs = items.filter((a) => a.unlocked).reduce((s, a) => s + a.gamerscore, 0);
@@ -67,41 +88,56 @@ export const AchievementsModal: React.FC<AchievementsModalProps> = ({
 
         {/* Achievement List */}
         <div className="px-7 pb-6 overflow-y-auto space-y-2.5 flex-1">
-          {items.map((item) => (
-            <div
-              key={item.id}
-              className="rounded-2xl bg-white/[0.06] px-4 py-3.5 flex items-center justify-between gap-4"
-            >
-              <div className="flex items-center gap-4 min-w-0">
+          {loading ? (
+            <div className="py-12 flex items-center justify-center gap-3 text-sm text-[#bebebe]">
+              <RefreshCw className="w-5 h-5 text-white psbox-spinner" />
+              Loading Xbox Live achievements...
+            </div>
+          ) : items.length === 0 ? (
+            <div className="py-12 text-center text-sm text-[#8c8c8c]">
+              No Xbox Live achievements available for this title yet.
+            </div>
+          ) : (
+            items.map((item) => (
+              <div
+                key={item.id}
+                className="rounded-2xl bg-white/[0.06] px-4 py-3.5 flex items-center justify-between gap-4"
+              >
+                <div className="flex items-center gap-4 min-w-0">
+                  <div
+                    className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
+                      item.unlocked ? 'bg-[#107c10] text-white' : 'bg-white/10 text-[#8c8c8c]'
+                    }`}
+                  >
+                    {item.unlocked ? <Check className="w-5 h-5 stroke-[2.5]" /> : <Lock className="w-4 h-4" />}
+                  </div>
+                  <div className="min-w-0">
+                    <div
+                      className={`font-semibold text-base truncate ${
+                        item.unlocked ? 'text-white' : item.isSecret ? 'text-[#8c8c8c]' : 'text-[#e5e5e5]'
+                      }`}
+                    >
+                      {item.unlocked ? item.name : item.isSecret ? 'Secret achievement' : item.name}
+                    </div>
+                    <div className="text-xs sm:text-sm text-[#bebebe] truncate">
+                      {item.unlocked
+                        ? item.description
+                        : item.isSecret
+                          ? 'Locked'
+                          : item.lockedDescription || item.description}
+                    </div>
+                  </div>
+                </div>
                 <div
-                  className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-                    item.unlocked ? 'bg-[#107c10] text-white' : 'bg-white/10 text-[#8c8c8c]'
+                  className={`text-sm font-semibold shrink-0 ${
+                    item.unlocked ? 'text-[#6ee178]' : 'text-[#8c8c8c]'
                   }`}
                 >
-                  {item.unlocked ? <Check className="w-5 h-5 stroke-[2.5]" /> : <Lock className="w-4 h-4" />}
-                </div>
-                <div className="min-w-0">
-                  <div className={`font-semibold text-base truncate ${item.unlocked ? 'text-white' : item.isSecret ? 'text-[#8c8c8c]' : 'text-[#e5e5e5]'}`}>
-                    {item.unlocked ? item.name : item.isSecret ? 'Secret achievement' : item.name}
-                  </div>
-                  <div className="text-xs sm:text-sm text-[#bebebe] truncate">
-                    {item.unlocked
-                      ? item.description
-                      : item.isSecret
-                        ? 'Locked'
-                        : item.lockedDescription || item.description}
-                  </div>
+                  {item.gamerscore} G
                 </div>
               </div>
-              <div
-                className={`text-sm font-semibold shrink-0 ${
-                  item.unlocked ? 'text-[#6ee178]' : 'text-[#8c8c8c]'
-                }`}
-              >
-                {item.gamerscore} G
-              </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
 
         {/* Footer */}
